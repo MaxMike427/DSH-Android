@@ -73,7 +73,16 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: dsh-runtime-arm64
-          path: app/src/main/assets
+          # Uploaded with its repo-relative path, so download reproduces
+          # app/src/main/assets/* under the workspace root.
+          path: .
+
+      - name: Verify payload landed in assets
+        run: |
+          ls -lh app/src/main/assets
+          test -s app/src/main/assets/rootfs.tar.xz
+          test -s app/src/main/assets/proot.tar.gz
+          test -s app/src/main/assets/runtime-manifest.json
 
       - uses: actions/setup-java@v4
         with:
@@ -84,6 +93,22 @@ jobs:
 
       - name: Assemble debug APK
         run: ./gradlew :app:assembleDebug --no-daemon
+
+      - name: Verify the APK actually contains the runtime payload
+        # A missing asset produces an APK that installs but cannot extract
+        # anything, which is exactly the failure this check exists to prevent.
+        run: |
+          apk="$(find app/build/outputs/apk/debug -name '*.apk' -print -quit)"
+          [ -n "$apk" ] || { echo "no APK produced" >&2; exit 1; }
+          echo "APK: $apk ($(stat -c%s "$apk") bytes)"
+          for entry in assets/proot.tar.gz assets/rootfs.tar.xz assets/runtime-manifest.json; do
+            if unzip -l "$apk" | grep -qF " $entry"; then
+              echo "  ok $entry"
+            else
+              echo "  MISSING $entry" >&2
+              exit 1
+            fi
+          done
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
