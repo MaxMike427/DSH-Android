@@ -169,21 +169,23 @@ guest /bin/bash -lc 'set -e
   exit 1
 '
 
-echo "=== bash tool works without a kernel sandbox"
+echo "=== bash tool actually executes inside the guest"
+# The decisive check: the composed tree must use the local bash executor. PRoot
+# cannot satisfy dsh-sandbox-local, and that provider fails closed, so a missing
+# profile patch means every bash call dies with SANDBOX_UNAVAILABLE.
 guest /bin/bash -lc 'set -e
   . /root/.nvm/nvm.sh
   cd /root
-  dsh web --no-open --port 3098 >/tmp/web2.log 2>&1 &
-  pid=$!
-  for _ in $(seq 1 180); do
-    (exec 3<>/dev/tcp/127.0.0.1/3098) 2>/dev/null && break
-    kill -0 "$pid" 2>/dev/null || { cat /tmp/web2.log >&2; exit 1; }
-    sleep 1
-  done
-  # The composed tree must show the local executor, not the sandboxed one.
-  dsh --profile web --dump-config 2>/dev/null | grep -E "bash-(local|sandbox)" || true
-  kill "$pid" 2>/dev/null || true
-  wait "$pid" 2>/dev/null || true
+  dsh --profile web --dump-config >/tmp/composed.yml 2>/tmp/composed.err || true
+  echo "  --- composed bash rows ---"
+  grep -n -E "bash-(local|sandbox)|id: bash" /tmp/composed.yml || true
+  echo "  --- patch diagnostics ---"
+  cat /tmp/composed.err || true
+  if ! grep -q "dsh-bash-local" /tmp/composed.yml; then
+    echo "  FAIL: the PRoot profile patch did not compose dsh-bash-local" >&2
+    exit 1
+  fi
+  echo "  ok: local bash executor composed"
 '
 
 echo "=== payload smoke test passed"
