@@ -247,9 +247,10 @@ class DshRuntime(
         export NVM_DIR=/root/.nvm
         [ -s "${'$'}NVM_DIR/nvm.sh" ] && . "${'$'}NVM_DIR/nvm.sh"
         cd /root
-        # PRoot has no bwrap/Landlock, so the patch overlay swaps the sandboxed
-        # bash executor for the local one. See runtime/dsh/cordis.patch.yml.
-        exec dsh web --no-open --port $port --patch /opt/dsh/cordis.patch.yml
+        # /root/.dsh/profiles/web/cordis.patch.yml already carries the PRoot
+        # composition (local bash executor instead of the sandboxed one), so no
+        # launcher flag is needed here.
+        exec dsh web --no-open --port $port
     """.trimIndent()
 
     private fun writeNetworkConfig() {

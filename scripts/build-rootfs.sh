@@ -84,8 +84,11 @@ sudo chroot "$ROOTFS" /usr/bin/env -i \
     . "$NVM_DIR/nvm.sh"
     nvm install "$NODE_MAJOR"
     nvm alias default "$NODE_MAJOR"
-    npm install -g "pnpm@$PNPM_VERSION"
-    corepack disable || true'
+    corepack disable || true
+    # npm >= 11 blocks lifecycle scripts by default; pnpm ships a native binary
+    # through its install script, so the package must be explicitly allowed.
+    npm install -g --allow-scripts=pnpm "pnpm@$PNPM_VERSION"
+    pnpm --version'
 
 log "DeepSeekRuntime $DSH_VERSION"
 sudo chroot "$ROOTFS" /usr/bin/env -i \
@@ -98,7 +101,8 @@ sudo chroot "$ROOTFS" /usr/bin/env -i \
     npm install -g "@deepseek-ai/dsh@$DSH_VERSION"
     dsh --version'
 
-# Warm the web profile so the first on-device launch needs no package downloads.
+# Warm the web profile so the first on-device launch needs no package downloads,
+# then install the PRoot composition into the profile itself.
 log "warm dsh web profile"
 sudo chroot "$ROOTFS" /usr/bin/env -i \
   HOME=/root PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
@@ -110,7 +114,22 @@ sudo chroot "$ROOTFS" /usr/bin/env -i \
     timeout 240 dsh web --no-open --port 3099 >/tmp/dsh-warm.log 2>&1 || true
     tail -n 60 /tmp/dsh-warm.log || true
     rm -rf /root/.npm /root/.cache
-    ls -la /root/.dsh 2>/dev/null || true'
+    ls -la /root/.dsh/profiles/web 2>/dev/null || true'
+
+log "install PRoot profile patch"
+# PRoot cannot satisfy dsh-sandbox-local (no bwrap/Landlock), and that provider
+# fails closed. The profile layer swaps the sandboxed bash executor for the
+# local one; fs-sandbox and approvals stay in place.
+PROFILE_DIR="$ROOTFS/root/.dsh/profiles/web"
+sudo mkdir -p "$PROFILE_DIR"
+sudo cp "$REPO_ROOT/runtime/dsh/cordis.patch.yml" "$PROFILE_DIR/cordis.patch.yml"
+sudo chmod 0644 "$PROFILE_DIR/cordis.patch.yml"
+sudo mkdir -p "$ROOTFS/opt/dsh"
+sudo cp "$REPO_ROOT/runtime/dsh/cordis.patch.yml" "$ROOTFS/opt/dsh/cordis.patch.yml"
+sudo chmod 0644 "$ROOTFS/opt/dsh/cordis.patch.yml"
+
+cleanup_mounts
+trap - EXIT
 
 log "trim rootfs"
 sudo chroot "$ROOTFS" /usr/bin/env -i \
@@ -119,17 +138,6 @@ sudo chroot "$ROOTFS" /usr/bin/env -i \
     rm -rf /usr/share/doc/* /usr/share/man/* /usr/share/locale/* /var/cache/* /tmp/* \
            /root/.npm /root/.cache /usr/lib/apt /var/lib/apt/lists
     apt-get clean || true'
-
-# PRoot-specific composition: swap the bwrap/Landlock bash executor for the
-# unconfined local one. Installed into the image so the app can pass it with
-# --patch without shipping a separate asset.
-log "install PRoot profile patch"
-sudo mkdir -p "$ROOTFS/opt/dsh"
-sudo cp "$REPO_ROOT/runtime/dsh/cordis.patch.yml" "$ROOTFS/opt/dsh/cordis.patch.yml"
-sudo chmod 0644 "$ROOTFS/opt/dsh/cordis.patch.yml"
-
-cleanup_mounts
-trap - EXIT
 
 log "Termux PRoot"
 PROOT_DIR="$WORK_DIR/proot"

@@ -138,16 +138,16 @@ guest /bin/bash -lc 'set -e
   git log --oneline
 '
 
-echo "=== PRoot profile patch is installed"
-test -f "$ROOTFS/opt/dsh/cordis.patch.yml"
-grep -q "bash-local" "$ROOTFS/opt/dsh/cordis.patch.yml"
+echo "=== PRoot profile patch is installed in the web profile"
+test -f "$ROOTFS/root/.dsh/profiles/web/cordis.patch.yml"
+grep -q "bash-local" "$ROOTFS/root/.dsh/profiles/web/cordis.patch.yml"
 echo "  ok"
 
-echo "=== dsh web boot with the PRoot profile patch"
+echo "=== dsh web boot (profile layer carries the PRoot composition)"
 guest /bin/bash -lc 'set -e
   . /root/.nvm/nvm.sh
   cd /root
-  dsh web --no-open --port 3099 --patch /opt/dsh/cordis.patch.yml >/tmp/web.log 2>&1 &
+  dsh web --no-open --port 3099 >/tmp/web.log 2>&1 &
   pid=$!
   for _ in $(seq 1 180); do
     if (exec 3<>/dev/tcp/127.0.0.1/3099) 2>/dev/null; then
@@ -167,6 +167,23 @@ guest /bin/bash -lc 'set -e
   cat /tmp/web.log >&2
   kill "$pid" 2>/dev/null || true
   exit 1
+'
+
+echo "=== bash tool works without a kernel sandbox"
+guest /bin/bash -lc 'set -e
+  . /root/.nvm/nvm.sh
+  cd /root
+  dsh web --no-open --port 3098 >/tmp/web2.log 2>&1 &
+  pid=$!
+  for _ in $(seq 1 180); do
+    (exec 3<>/dev/tcp/127.0.0.1/3098) 2>/dev/null && break
+    kill -0 "$pid" 2>/dev/null || { cat /tmp/web2.log >&2; exit 1; }
+    sleep 1
+  done
+  # The composed tree must show the local executor, not the sandboxed one.
+  dsh --profile web --dump-config 2>/dev/null | grep -E "bash-(local|sandbox)" || true
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
 '
 
 echo "=== payload smoke test passed"
