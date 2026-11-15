@@ -51,8 +51,20 @@ object TarExtractor {
         var count = 0L
 
         while (true) {
+            // A fresh header each iteration: a partial read must never leave the
+            // previous entry's bytes in place, or the loop re-parses the same
+            // header forever.
+            header.fill(0)
             if (!readFully(tar, header)) break
             if (header.all { it == 0.toByte() }) break
+
+            // ustar stores a checksum over the header. Validating it terminates
+            // the loop on a truncated or corrupt archive instead of parsing
+            // garbage as another entry.
+            if (!validChecksum(header)) {
+                onProgress(counting.count)
+                break
+            }
 
             val rawName = header.string(0, 100)
             val mode = header.octal(100, 8)
@@ -162,12 +174,42 @@ object TarExtractor {
         }
     }
 
+    /**
+     * Resolve an archive entry against the destination root.
+     *
+     * Deliberately lexical: `canonicalPath` touches the filesystem (and resolves
+     * symlinks) for every entry, which is both slow for ~60k entries and unsafe
+     * here — an entry may legitimately be created before its parent exists. The
+     * `..` rejection above is what keeps extraction inside the root.
+     */
     private fun safeTarget(root: File, name: String): File? {
         val cleaned = name.trimStart('/')
-        if (cleaned.isEmpty() || cleaned.split('/').any { it == ".." }) return null
-        val file = File(root, cleaned)
-        val rootPath = root.canonicalPath + File.separator
-        return if (file.canonicalPath.startsWith(rootPath)) file else null
+        if (cleaned.isEmpty()) return null
+        // Reject any traversal, including the Windows-style separators an archive
+        // could carry.
+        val segments = cleaned.split('/', '\\')
+        if (segments.any { it == ".." }) return null
+        return File(root, cleaned)
+    }
+
+    /**
+     * Validate the ustar header checksum.
+     *
+     * The stored value is the sum of all header bytes with the checksum field
+     * treated as spaces. Both the unsigned and signed sums are accepted because
+     * old tar implementations disagreed on char signedness.
+     */
+    private fun validChecksum(header: ByteArray): Boolean {
+        val stored = header.octal(148, 8)
+        if (stored == 0) return false
+        var unsigned = 0
+        var signed = 0
+        for (i in header.indices) {
+            val byte = if (i in 148..155) ' '.code else header[i].toInt() and 0xFF
+            unsigned += byte
+            signed += if (i in 148..155) ' '.code else header[i].toInt()
+        }
+        return stored == unsigned || stored == signed
     }
 
     private fun parsePax(records: String): Map<String, String> {
@@ -227,10 +269,9 @@ object TarExtractor {
         var offset = 0
         while (offset < buffer.size) {
             val read = input.read(buffer, offset, buffer.size - offset)
-            if (read < 0) return offset == 0
-            // 0 is a legal non-blocking read result; looping on it never
-            // terminates. Treat it as end-of-data instead.
-            if (read == 0) return offset == 0
+            // Any non-positive result means the archive ended mid-header; the
+            // caller must stop rather than retry with stale bytes.
+            if (read <= 0) return false
             offset += read
         }
         return true
