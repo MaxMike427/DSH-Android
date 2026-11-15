@@ -159,11 +159,13 @@ class DshRuntime(
             val process = ProcessBuilder(prootCommand(listOf(
                 "/bin/bash", "-lc", startScript()
             )))
+                .apply { environment().putAll(this@DshRuntime.environment()) }
                 .redirectErrorStream(true)
                 .redirectOutput(ProcessBuilder.Redirect.appendTo(paths.serverLog))
                 .start()
 
             serverProcess = process
+            log(LogLine.LogStream.SYSTEM, "start: spawned pid ${processId(process)}")
 
             val ready = waitForHttp(process, timeoutSeconds = 180)
             if (ready) {
@@ -209,6 +211,7 @@ class DshRuntime(
     fun exec(command: String): Flow<LogLine> = callbackFlow {
         val process = runCatching {
             ProcessBuilder(prootCommand(listOf("/bin/bash", "-lc", command)))
+                .apply { environment().putAll(this@DshRuntime.environment()) }
                 .redirectErrorStream(true)
                 .start()
         }.getOrElse {
@@ -235,14 +238,15 @@ class DshRuntime(
             paths.proot.absolutePath,
             "--kill-on-exit",
             "--link2symlink",
-            // Fake root for the guest (apt, nvm and npm expect it), but map the
-            // guest's root identity onto the app's real uid/gid. Without
-            // -i/-k PRoot leaves host files owned by the app's uid while the
-            // guest believes it is root; with them, files created in shared
-            // storage stay readable by the Android apps that own it.
+            // Fake root for the guest: apt, nvm and npm all expect uid 0, and
+            // `-0` is shorthand for `-i 0:0`.
+            //
+            // Deliberately NOT combined with a second `-i uid:gid`: PRoot keeps
+            // only the LAST -i/-0/-S option (handle_option_i frees the previous
+            // extension), so adding -i after -0 silently disables the fake root.
+            // Files written into shared storage still end up owned by the app's
+            // uid, because PRoot cannot change host ownership without real root.
             "-0",
-            "-i", android.os.Process.myUid().toString(),
-            "-k", android.os.Process.myUid().toString(),
             "-r", paths.rootfs.absolutePath,
             "-b", "/dev",
             "-b", "/proc",
@@ -266,11 +270,17 @@ class DshRuntime(
 
     fun environment(): Map<String, String> = mapOf(
         "PROOT_TMP_DIR" to paths.tmp.absolutePath,
+        // PRoot's ptrace-based syscall interception conflicts with Android's
+        // seccomp filter on some kernels; Termux ships this default too.
         "PROOT_NO_SECCOMP" to "1",
+        // Point at the bundled loader so PRoot does not have to write one into
+        // PROOT_TMP_DIR on every exec (and cannot fail if that dir is noexec).
         "PROOT_LOADER" to paths.prootLoader.absolutePath,
-        "HOME" to paths.home.absolutePath,
+        // Guest-relative, not host-relative: /root is bound to files/home.
+        "HOME" to "/root",
         "TERM" to "xterm-256color",
         "LANG" to "C.UTF-8",
+        "PATH" to "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
     )
 
     private fun startScript(): String = """
