@@ -7,7 +7,6 @@ captures/
 .externalNativeBuild/
 .cxx/
 # Generated offline runtime payload (built in CI, never committed)
-app/src/main/assets/rootfs.tar.zst
-app/src/main/assets/proot.tar.zst
-app/src/main/assets/bootstrap.tar.zst
+app/src/main/assets/rootfs.tar.xz
+app/src/main/assets/proot.tar.gz
 app/src/main/assets/runtime-manifest.json

@@ -17,9 +17,30 @@ import java.util.zip.GZIPInputStream
 object TarExtractor {
 
     fun extract(gzip: InputStream, destination: File, onProgress: (Long) -> Unit = {}) {
+        extractStream(gzip, destination, onProgress)
+    }
+
+    /** Rootfs payload: XZ-compressed tar (much smaller than gzip for this tree). */
+    fun extractXz(input: InputStream, destination: File, onProgress: (Long) -> Unit = {}) {
+        val counting = CountingInputStream(input)
+        val xz = org.tukaani.xz.XZInputStream(counting, null)
+        extractTar(xz, counting, destination, onProgress)
+    }
+
+    fun extractStream(input: InputStream, destination: File, onProgress: (Long) -> Unit = {}) {
+        val counting = CountingInputStream(input)
+        val gzip = GZIPInputStream(counting, 1 shl 16)
+        extractTar(gzip, counting, destination, onProgress)
+    }
+
+    private fun extractTar(
+        tarInput: InputStream,
+        counting: CountingInputStream,
+        destination: File,
+        onProgress: (Long) -> Unit,
+    ) {
         destination.mkdirs()
-        val counting = CountingInputStream(gzip)
-        val tar = GZIPInputStream(counting, 1 shl 16)
+        val tar = tarInput
         val header = ByteArray(512)
         var pendingName: String? = null
         var pendingLink: String? = null

@@ -11,8 +11,10 @@ rootfs and the whole Node.js toolchain are packaged into the APK.
 | Piece | State |
 | --- | --- |
 | Android app (Compose UI, WebView, foreground service) | builds |
-| PRoot prefix rewrite (`com.termux` → `com.dshapp`) | implemented, CI-verified |
-| Runtime payload (Ubuntu 24.04.5 + git/nvm/node/npm/pnpm/dsh) | built in CI |
+| PRoot prefix rewrite (`com.termux` → `com.dshapp`) | CI-verified |
+| Runtime payload (Ubuntu 24.04.5 + git/nvm/node/npm/pnpm/dsh) | CI-verified through chroot |
+| PRoot composition (local bash executor) | CI-verified |
+| Launcher icon, shared-storage mounts | implemented, not yet device-tested |
 | On-device validation | not yet run (needs a physical arm64 device) |
 
 ## Why targetSdk 28
@@ -75,6 +77,33 @@ files/home/           persisted guest /root
 files/logs/           dsh web output
 files/state/          install marker, resolv.conf, hosts
 ```
+
+Inside the guest, shared storage appears under `/mnt/android`:
+
+| Guest path | Android path | Requires |
+| --- | --- | --- |
+| `/mnt/android/android-shared` | `Android/data/com.dshapp/files` | nothing |
+| `/mnt/android/download` | `/storage/emulated/0/Download` | all-files access |
+| `/mnt/android/documents` | `/storage/emulated/0/Documents` | all-files access |
+| `/mnt/android/dcim` | `/storage/emulated/0/DCIM` | all-files access |
+| `/mnt/android/pictures` | `/storage/emulated/0/Pictures` | all-files access |
+| `/mnt/android/movies`, `music`, … | matching public folders | all-files access |
+| `/mnt/android/shared` | `/storage/emulated/0` | all-files access |
+
+Only existing directories are bound; a missing folder or a denied permission
+never aborts the PRoot spawn. The in-app card on the launch screen opens the
+system "All files access" screen on Android 11+, and requests the legacy
+read/write permissions on older releases.
+
+Guest commands still run as a fake root, but `-i`/`-k` map that identity onto the
+app's real uid, so files written to shared storage stay readable by the apps that
+own those folders.
+
+## Launcher icon
+
+Generated from the supplied character sheet by `scripts/make-icons.py`
+(legacy mipmaps plus an adaptive icon). Re-run it after replacing the source
+image.
 
 ## Known constraints
 

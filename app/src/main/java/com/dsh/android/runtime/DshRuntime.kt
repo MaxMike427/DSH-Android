@@ -86,7 +86,7 @@ class DshRuntime(
             val stamp = "installed:${manifest.hashCode()}:${BuildConfigPayload.VERSION}"
 
             val prootBytes = assets.openFd("proot.tar.gz").use { it.length }
-            val rootfsBytes = assets.openFd("rootfs.tar.gz").use { it.length }
+            val rootfsBytes = assets.openFd("rootfs.tar.xz").use { it.length }
             val totalBytes = (prootBytes + rootfsBytes).coerceAtLeast(1)
 
             // PRoot first: it is small, and a failed rootfs extract must not leave
@@ -107,8 +107,8 @@ class DshRuntime(
             }
 
             _state.value = RuntimeState.Installing("Extracting Ubuntu", 0.10f)
-            assets.open("rootfs.tar.gz").use { input ->
-                TarExtractor.extract(input, paths.rootfs) { done ->
+            assets.open("rootfs.tar.xz").use { input ->
+                TarExtractor.extractXz(input, paths.rootfs) { done ->
                     val fraction = 0.10f + (done.toFloat() / totalBytes) * 0.89f
                     onProgress(fraction.coerceIn(0.10f, 0.99f), "Extracting Ubuntu")
                 }

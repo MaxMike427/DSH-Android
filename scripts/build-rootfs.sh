@@ -8,7 +8,7 @@
 # cannot smoke-test meaningfully.
 #
 # Outputs (consumed by the app from src/main/assets):
-#   rootfs.tar.gz          Ubuntu 24.04.x arm64 + git/nvm/node/npm/pnpm/dsh
+#   rootfs.tar.xz          Ubuntu 24.04.x arm64 + git/nvm/node/npm/pnpm/dsh
 #   proot.tar.gz           Termux PRoot with the app prefix patched in
 #   runtime-manifest.json  pinned versions and sizes
 set -euo pipefail
@@ -29,7 +29,7 @@ mkdir -p "$OUT_DIR" "$WORK_DIR"
 log() { printf '\n=== %s\n' "$*" >&2; }
 need() { command -v "$1" >/dev/null 2>&1 || { echo "missing host tool: $1" >&2; exit 1; }; }
 
-for tool in curl tar gzip sha256sum sudo chroot python3 perl ar; do need "$tool"; done
+for tool in curl tar gzip xz sha256sum sudo chroot python3 perl ar; do need "$tool"; done
 [ "$(uname -m)" = "aarch64" ] || { echo "must run on aarch64 (got $(uname -m))" >&2; exit 1; }
 [ "${#APP_PACKAGE}" -eq 10 ] || { echo "APP_PACKAGE must be 10 chars to match com.termux" >&2; exit 1; }
 
@@ -98,7 +98,15 @@ sudo chroot "$ROOTFS" /usr/bin/env -i \
     export NVM_DIR=/root/.nvm
     . "$NVM_DIR/nvm.sh"
     node --version
-    npm install -g "@deepseek-ai/dsh@$DSH_VERSION"
+    # These lifecycle scripts are mandatory, not optional:
+    #   dsh-subprocess-local  builds the spawn helper PRoot relies on
+    #   node-pty              terminal backend
+    #   koffi                 native FFI used by the terminal/PTY stack
+    # Without them npm "succeeds" but the runtime has no usable terminal and no
+    # process helper, so allow-scripts is part of install correctness.
+    npm install -g \
+      --allow-scripts=@deepseek-ai/dsh-subprocess-local,koffi,node-pty,@google/genai,protobufjs \
+      "@deepseek-ai/dsh@$DSH_VERSION"
     dsh --version'
 
 # Warm the web profile so the first on-device launch needs no package downloads,
@@ -132,11 +140,28 @@ cleanup_mounts
 trap - EXIT
 
 log "trim rootfs"
+# Size matters: the rootfs ships inside the APK. Everything removed here is
+# either documentation, another arch's data, or a build-time artifact the
+# runtime never reads.
 sudo chroot "$ROOTFS" /usr/bin/env -i \
   PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
   bash -lc 'set -e
-    rm -rf /usr/share/doc/* /usr/share/man/* /usr/share/locale/* /var/cache/* /tmp/* \
-           /root/.npm /root/.cache /usr/lib/apt /var/lib/apt/lists
+    # Docs, man pages, locales, package caches.
+    rm -rf /usr/share/doc/* /usr/share/man/* /usr/share/info/* /usr/share/locale/* \
+           /usr/share/zoneinfo/right /usr/share/i18n /var/cache/* /tmp/* \
+           /usr/lib/apt /var/lib/apt/lists /root/.npm /root/.cache
+    # Git is the largest single package; keep the binary and drop its extras.
+    rm -rf /usr/share/git-core/templates/hooks /usr/share/git-core/contrib \
+           /usr/lib/git-core/*.so 2>/dev/null || true
+    # Node ships full ICU + headers we do not need at runtime.
+    NODE_DIR="$(dirname "$(dirname "$(readlink -f "$(command -v node)")")")"
+    rm -rf "$NODE_DIR/include" "$NODE_DIR/share/doc" "$NODE_DIR/share/man" \
+           "$NODE_DIR/lib/node_modules/npm/docs" "$NODE_DIR/lib/node_modules/npm/man"
+    # dsh bundles source maps and test fixtures that are dead weight on device.
+    DSH_DIR="$(dirname "$(readlink -f "$(command -v dsh)")")/.."
+    find "$DSH_DIR" -name "*.map" -delete 2>/dev/null || true
+    find "$DSH_DIR" -type d \( -name test -o -name tests -o -name __tests__ \) \
+      -prune -exec rm -rf {} + 2>/dev/null || true
     apt-get clean || true'
 
 log "Termux PRoot"
@@ -190,13 +215,16 @@ mkdir -p "$PAYLOAD_DIR"
 cp -a "$PROOT_DIR/usr" "$PAYLOAD_DIR/usr"
 
 log "package payloads"
-sudo tar -C "$ROOTFS" --numeric-owner --owner=0 --group=0 -cf - . | gzip -9 > "$OUT_DIR/rootfs.tar.gz"
+# Use xz for the rootfs: it compresses ~2x better than gzip on this content, and
+# the app decompresses it once. proot.tar.gz stays gzip (it is only 179 KiB).
+sudo tar -C "$ROOTFS" --numeric-owner --owner=0 --group=0 -cf - . \
+  | xz -9 -T0 --check=crc32 > "$OUT_DIR/rootfs.tar.xz"
 tar -C "$PAYLOAD_DIR" --numeric-owner --owner=0 --group=0 -cf - . | gzip -9 > "$OUT_DIR/proot.tar.gz"
 
 log "manifest"
-ROOTFS_BYTES="$(stat -c%s "$OUT_DIR/rootfs.tar.gz")"
+ROOTFS_BYTES="$(stat -c%s "$OUT_DIR/rootfs.tar.xz")"
 PROOT_BYTES="$(stat -c%s "$OUT_DIR/proot.tar.gz")"
-ROOTFS_SHA="$(sha256sum "$OUT_DIR/rootfs.tar.gz" | cut -d' ' -f1)"
+ROOTFS_SHA="$(sha256sum "$OUT_DIR/rootfs.tar.xz" | cut -d' ' -f1)"
 PROOT_SHA="$(sha256sum "$OUT_DIR/proot.tar.gz" | cut -d' ' -f1)"
 
 ROOTFS_BYTES="$ROOTFS_BYTES" PROOT_BYTES="$PROOT_BYTES" \
@@ -220,7 +248,7 @@ manifest = {
     "dsh": env("DSH_VERSION"),
     "proot": "5.1.107.102",
     "rootfs": {
-        "file": "rootfs.tar.gz",
+        "file": "rootfs.tar.xz",
         "bytes": int(env("ROOTFS_BYTES", "0")),
         "sha256": env("ROOTFS_SHA"),
     },

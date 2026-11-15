@@ -38,7 +38,7 @@ tar -xzf "$ASSETS/proot.tar.gz" -C "$FILES"
 chmod +x "$PREFIX/bin/proot" "$PREFIX/libexec/proot/loader"
 
 echo "=== unpack rootfs"
-tar -xzf "$ASSETS/rootfs.tar.gz" -C "$ROOTFS"
+tar -xJf "$ASSETS/rootfs.tar.xz" -C "$ROOTFS"
 
 echo "=== PRoot binary is Android-shaped and app-prefixed"
 python3 - "$PREFIX/bin/proot" "$PACKAGE" <<'PY'

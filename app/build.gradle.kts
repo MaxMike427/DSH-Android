@@ -76,6 +76,9 @@ dependencies {
 
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
 
+    // Pure-Java XZ decoder for the rootfs payload (no NDK or native library).
+    implementation("org.tukaani:xz:1.10")
+
     debugImplementation("androidx.compose.ui:ui-tooling")
 }
 
