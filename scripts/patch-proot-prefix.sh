@@ -40,3 +40,7 @@ if [ "$patched" -eq 0 ]; then
 fi
 
 echo "patched $patched file(s) to $NEW"
+
+# Deduplicate the talloc library copies the Termux package ships as separate
+# regular files (symlinks do not survive every extraction path).
+

@@ -23,9 +23,10 @@ object TarExtractor {
     /** Rootfs payload: XZ-compressed tar (much smaller than gzip for this tree). */
     fun extractXz(input: InputStream, destination: File, onProgress: (Long) -> Unit = {}) {
         val counting = CountingInputStream(input)
-        // XZInputStream decodes one stream; the payload is written as a single
-        // stream by `tar | xz`, so this is correct for both archives.
-        val xz = org.tukaani.xz.XZInputStream(counting, null)
+        // The second argument is an ArrayCache, not an optional hint: passing
+        // null makes the decoder dereference it on the first block. The basic
+        // cache reuses buffers and needs no explicit sizing.
+        val xz = org.tukaani.xz.XZInputStream(counting, org.tukaani.xz.ArrayCache.getDefaultCache())
         extractTar(xz, counting, destination, onProgress)
     }
 
@@ -192,7 +193,9 @@ object TarExtractor {
         var offset = 0
         while (offset < data.size) {
             val read = input.read(data, offset, data.size - offset)
-            if (read < 0) break
+            // A stream may legally return 0; treating it as "keep looping" spins
+            // forever. Anything <= 0 means no more data is coming.
+            if (read <= 0) break
             offset += read
         }
         skipFully(input, padded(size) - size)
@@ -204,7 +207,7 @@ object TarExtractor {
         var remaining = size
         while (remaining > 0) {
             val read = input.read(buffer, 0, minOf(buffer.size.toLong(), remaining).toInt())
-            if (read < 0) break
+            if (read <= 0) break
             out.write(buffer, 0, read)
             remaining -= read
         }
@@ -215,7 +218,7 @@ object TarExtractor {
         val buffer = ByteArray(8192)
         while (remaining > 0) {
             val read = input.read(buffer, 0, minOf(buffer.size.toLong(), remaining).toInt())
-            if (read < 0) return
+            if (read <= 0) return
             remaining -= read
         }
     }
@@ -225,6 +228,9 @@ object TarExtractor {
         while (offset < buffer.size) {
             val read = input.read(buffer, offset, buffer.size - offset)
             if (read < 0) return offset == 0
+            // 0 is a legal non-blocking read result; looping on it never
+            // terminates. Treat it as end-of-data instead.
+            if (read == 0) return offset == 0
             offset += read
         }
         return true
