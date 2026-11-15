@@ -47,7 +47,9 @@ jobs:
         run: bash scripts/build-rootfs.sh
 
       - name: Smoke-test payload
-        run: bash scripts/smoke-rootfs.sh
+        # PRoot resolves its loader through the device-absolute prefix, so the
+        # check unpacks at /data/data/com.dshapp/files and runs as root.
+        run: sudo -E bash scripts/smoke-rootfs.sh
 
       - name: Upload payload
         uses: actions/upload-artifact@v4

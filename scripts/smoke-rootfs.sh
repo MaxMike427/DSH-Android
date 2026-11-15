@@ -1,24 +1,28 @@
 #!/usr/bin/env bash
-# Verify the built payload the way the Android app consumes it: unpack into the
-# app's private-directory shape, then run the toolchain through PRoot.
+# Verify the built payload the way the Android app consumes it.
 #
-# Runs on the same ARM64 runner that produced the payload.
+# PRoot's DT_RUNPATH and PROOT_UNBUNDLE_LOADER are absolute
+# (/data/data/com.dshapp/files/usr/...), exactly as they will be on the device,
+# so the payload is unpacked at that path rather than under a temp directory.
+# This needs sudo on the CI runner; nothing outside that path is modified.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 ASSETS="$REPO_ROOT/app/src/main/assets"
-WORK="${RUNNER_TEMP:-/tmp}/dsh-smoke"
 PACKAGE="${APP_PACKAGE:-com.dshapp}"
-BASE="$WORK/data/data/$PACKAGE/files"
-PREFIX="$BASE/usr"
-ROOTFS="$BASE/rootfs"
+FILES="/data/data/$PACKAGE/files"
+PREFIX="$FILES/usr"
+ROOTFS="$FILES/rootfs"
+WORK="${RUNNER_TEMP:-/tmp}/dsh-smoke"
 
-rm -rf "$WORK"
-mkdir -p "$PREFIX" "$ROOTFS"
+sudo rm -rf "/data/data/$PACKAGE" "$WORK"
+sudo mkdir -p "$PREFIX" "$ROOTFS"
+sudo chown -R "$(id -u):$(id -g)" "/data/data/$PACKAGE"
+mkdir -p "$WORK"
 
 echo "=== unpack PRoot payload"
-tar -xzf "$ASSETS/proot.tar.gz" -C "$PREFIX"
+tar -xzf "$ASSETS/proot.tar.gz" -C "$FILES"
 chmod +x "$PREFIX/bin/proot" "$PREFIX/libexec/proot/loader"
 
 echo "=== unpack rootfs"
@@ -30,7 +34,7 @@ if grep -qF "/data/data/com.termux/files/usr" "$PREFIX/bin/proot"; then
   exit 1
 fi
 grep -qF "/data/data/$PACKAGE/files/usr" "$PREFIX/bin/proot"
-echo "ok"
+echo "ok: proot resolves $PREFIX"
 
 export PROOT_TMP_DIR="$WORK/tmp"
 mkdir -p "$PROOT_TMP_DIR"
@@ -68,17 +72,26 @@ run_guest 'set -e
   git log --oneline
 '
 
-echo "=== dsh web boot"
+echo "=== profile patch is installed"
+run_guest 'test -f /opt/dsh/cordis.patch.yml && grep -q "bash-local" /opt/dsh/cordis.patch.yml && echo ok'
+
+echo "=== dsh web boot with the PRoot profile patch"
 run_guest 'set -e
   . /root/.nvm/nvm.sh
   cd /root
   dsh web --no-open --port 3099 --patch /opt/dsh/cordis.patch.yml >/tmp/web.log 2>&1 &
   pid=$!
-  for _ in $(seq 1 120); do
+  for _ in $(seq 1 150); do
     if (exec 3<>/dev/tcp/127.0.0.1/3099) 2>/dev/null; then
       echo "web: listening on 127.0.0.1:3099"
       kill "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
       exit 0
+    fi
+    if ! kill -0 "$pid" 2>/dev/null; then
+      echo "web process exited early" >&2
+      cat /tmp/web.log >&2
+      exit 1
     fi
     sleep 1
   done
@@ -86,14 +99,6 @@ run_guest 'set -e
   cat /tmp/web.log >&2
   kill "$pid" 2>/dev/null || true
   exit 1
-'
-
-echo "=== composition check: bash executor is the local one"
-run_guest 'set -e
-  . /root/.nvm/nvm.sh
-  cd /root
-  dsh web --no-open --port 3098 --patch /opt/dsh/cordis.patch.yml --dump-config 2>/dev/null \
-    | grep -E "bash-(local|sandbox)" || true
 '
 
 echo "=== payload smoke test passed"

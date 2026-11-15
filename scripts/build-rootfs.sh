@@ -173,9 +173,17 @@ if grep -rqF -- "/data/data/com.termux/files/usr" "$PROOT_DIR/usr" 2>/dev/null; 
   exit 1
 fi
 
+# Archive with the same relative layout the app extracts into `files/`, so the
+# payload mirrors the on-device tree instead of relying on a hardcoded prefix.
+log "stage payload layout"
+PAYLOAD_DIR="$WORK_DIR/payload"
+rm -rf "$PAYLOAD_DIR"
+mkdir -p "$PAYLOAD_DIR"
+cp -a "$PROOT_DIR/usr" "$PAYLOAD_DIR/usr"
+
 log "package payloads"
 sudo tar -C "$ROOTFS" --numeric-owner --owner=0 --group=0 -cf - . | gzip -9 > "$OUT_DIR/rootfs.tar.gz"
-sudo tar -C "$PROOT_DIR" --numeric-owner --owner=0 --group=0 -cf - . | gzip -9 > "$OUT_DIR/proot.tar.gz"
+tar -C "$PAYLOAD_DIR" --numeric-owner --owner=0 --group=0 -cf - . | gzip -9 > "$OUT_DIR/proot.tar.gz"
 
 log "manifest"
 ROOTFS_BYTES="$(stat -c%s "$OUT_DIR/rootfs.tar.gz")"
