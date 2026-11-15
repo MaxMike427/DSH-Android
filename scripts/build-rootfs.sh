@@ -120,6 +120,14 @@ sudo chroot "$ROOTFS" /usr/bin/env -i \
            /root/.npm /root/.cache /usr/lib/apt /var/lib/apt/lists
     apt-get clean || true'
 
+# PRoot-specific composition: swap the bwrap/Landlock bash executor for the
+# unconfined local one. Installed into the image so the app can pass it with
+# --patch without shipping a separate asset.
+log "install PRoot profile patch"
+sudo mkdir -p "$ROOTFS/opt/dsh"
+sudo cp "$REPO_ROOT/runtime/dsh/cordis.patch.yml" "$ROOTFS/opt/dsh/cordis.patch.yml"
+sudo chmod 0644 "$ROOTFS/opt/dsh/cordis.patch.yml"
+
 cleanup_mounts
 trap - EXIT
 
@@ -166,8 +174,8 @@ if grep -rqF -- "/data/data/com.termux/files/usr" "$PROOT_DIR/usr" 2>/dev/null; 
 fi
 
 log "package payloads"
-tar -C "$ROOTFS" --numeric-owner --owner=0 --group=0 -cf - . | gzip -9 -T0 > "$OUT_DIR/rootfs.tar.gz"
-tar -C "$PROOT_DIR" --numeric-owner --owner=0 --group=0 -cf - . | gzip -9 -T0 > "$OUT_DIR/proot.tar.gz"
+sudo tar -C "$ROOTFS" --numeric-owner --owner=0 --group=0 -cf - . | gzip -9 -T0 > "$OUT_DIR/rootfs.tar.gz"
+sudo tar -C "$PROOT_DIR" --numeric-owner --owner=0 --group=0 -cf - . | gzip -9 -T0 > "$OUT_DIR/proot.tar.gz"
 
 log "manifest"
 ROOTFS_BYTES="$(stat -c%s "$OUT_DIR/rootfs.tar.gz")"

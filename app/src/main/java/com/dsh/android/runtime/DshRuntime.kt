@@ -242,7 +242,9 @@ class DshRuntime(
         export NVM_DIR=/root/.nvm
         [ -s "${'$'}NVM_DIR/nvm.sh" ] && . "${'$'}NVM_DIR/nvm.sh"
         cd /root
-        exec dsh web --no-open --port $port
+        # PRoot has no bwrap/Landlock, so the patch overlay swaps the sandboxed
+        # bash executor for the local one. See runtime/dsh/cordis.patch.yml.
+        exec dsh web --no-open --port $port --patch /opt/dsh/cordis.patch.yml
     """.trimIndent()
 
     private fun writeNetworkConfig() {

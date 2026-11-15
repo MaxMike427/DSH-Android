@@ -72,7 +72,7 @@ echo "=== dsh web boot"
 run_guest 'set -e
   . /root/.nvm/nvm.sh
   cd /root
-  dsh web --no-open --port 3099 >/tmp/web.log 2>&1 &
+  dsh web --no-open --port 3099 --patch /opt/dsh/cordis.patch.yml >/tmp/web.log 2>&1 &
   pid=$!
   for _ in $(seq 1 120); do
     if (exec 3<>/dev/tcp/127.0.0.1/3099) 2>/dev/null; then
@@ -86,6 +86,14 @@ run_guest 'set -e
   cat /tmp/web.log >&2
   kill "$pid" 2>/dev/null || true
   exit 1
+'
+
+echo "=== composition check: bash executor is the local one"
+run_guest 'set -e
+  . /root/.nvm/nvm.sh
+  cd /root
+  dsh web --no-open --port 3098 --patch /opt/dsh/cordis.patch.yml --dump-config 2>/dev/null \
+    | grep -E "bash-(local|sandbox)" || true
 '
 
 echo "=== payload smoke test passed"

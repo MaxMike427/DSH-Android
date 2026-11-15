@@ -1,0 +1,30 @@
+# Profile patch applied on top of the shipped `web` profile.
+#
+# Why this file exists
+# --------------------
+# `dsh-base` mounts `@deepseek-ai/dsh-bash-sandbox` as the bash executor. That
+# executor wraps every command with `ctx.sandbox` (`dsh-sandbox-local`), which on
+# Linux requires a working `bwrap` or Landlock runner. Inside PRoot neither is
+# available: PRoot is a ptrace-based userland emulator, not a kernel confinement
+# mechanism. The provider is fail-closed, so every bash call would fail with
+# SANDBOX_UNAVAILABLE instead of running.
+#
+# This patch swaps the *executor* for the unconfined local one. It deliberately
+# keeps everything else intact:
+#   - `sandbox` / `sandbox-policy` stay mounted, so `fs-sandbox` still fences
+#     file writes through ctx.fs;
+#   - `approval` and `permission` still gate tool calls;
+#   - the agent can run bash, which is the point of the app.
+#
+# Both executors register the same `bash` service, so disabling one and
+# enabling the other in the same layer is the supported swap (see the base
+# bundle README: an incomplete recipe fails at load).
+
+- id: bash-sandbox
+  disabled: true
+
+- id: bash-local
+  name: '@deepseek-ai/dsh-bash-local'
+  config:
+    timeoutMs: 60000
+    maxTimeoutMs: 600000
