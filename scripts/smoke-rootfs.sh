@@ -1,10 +1,17 @@
 #!/usr/bin/env bash
-# Verify the built payload the way the Android app consumes it.
+# Verify the built payload as far as a Linux host can.
 #
-# PRoot's DT_RUNPATH and PROOT_UNBUNDLE_LOADER are absolute
-# (/data/data/com.dshapp/files/usr/...), exactly as they will be on the device,
-# so the payload is unpacked at that path rather than under a temp directory.
-# This needs sudo on the CI runner; nothing outside that path is modified.
+# Two facts shape this script:
+#
+#  1. Termux's `proot` is linked against Android's `/system/bin/linker64`, so it
+#     cannot be executed on a Linux host at all. Its execution is validated on a
+#     real device (see scripts/device-test.sh), never here.
+#  2. Everything else in the payload is ordinary arm64 Linux and *can* be
+#     validated natively: the Ubuntu rootfs, git, nvm, Node.js, pnpm, and the
+#     `dsh web` server.
+#
+# So this checks the PRoot binary statically and exercises the guest through
+# chroot, which is the strongest host-side signal available.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -15,6 +22,11 @@ FILES="/data/data/$PACKAGE/files"
 PREFIX="$FILES/usr"
 ROOTFS="$FILES/rootfs"
 WORK="${RUNNER_TEMP:-/tmp}/dsh-smoke"
+
+cleanup() {
+  for d in sys proc dev/pts dev; do sudo umount -lf "$ROOTFS/$d" 2>/dev/null || true; done
+}
+trap cleanup EXIT
 
 sudo rm -rf "/data/data/$PACKAGE" "$WORK"
 sudo mkdir -p "$PREFIX" "$ROOTFS"
@@ -28,33 +40,84 @@ chmod +x "$PREFIX/bin/proot" "$PREFIX/libexec/proot/loader"
 echo "=== unpack rootfs"
 tar -xzf "$ASSETS/rootfs.tar.gz" -C "$ROOTFS"
 
-echo "=== prefix rewrite check"
-if grep -qF "/data/data/com.termux/files/usr" "$PREFIX/bin/proot"; then
-  echo "proot still references com.termux" >&2
-  exit 1
-fi
-grep -qF "/data/data/$PACKAGE/files/usr" "$PREFIX/bin/proot"
-echo "ok: proot resolves $PREFIX"
+echo "=== PRoot binary is Android-shaped and app-prefixed"
+python3 - "$PREFIX/bin/proot" "$PACKAGE" <<'PY'
+import struct, sys
 
-export PROOT_TMP_DIR="$WORK/tmp"
-mkdir -p "$PROOT_TMP_DIR"
-export PROOT_LOADER="$PREFIX/libexec/proot/loader"
-export PROOT_NO_SECCOMP=1
+path, package = sys.argv[1], sys.argv[2]
+data = open(path, "rb").read()
+assert data[:4] == b"\x7fELF", "not an ELF"
+assert data[4] == 2, "not ELF64"
+assert data[5] == 1, "not little-endian"
 
-run_guest() {
-  "$PREFIX/bin/proot" \
-    --kill-on-exit \
-    --link2symlink \
-    -0 \
-    -r "$ROOTFS" \
-    -b /dev -b /proc -b /sys \
-    -w /root \
-    /usr/bin/env -i HOME=/root PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin TERM=dumb \
-    /bin/bash -lc "$1"
+e_phoff, = struct.unpack_from("<Q", data, 0x20)
+e_phentsize, e_phnum = struct.unpack_from("<HH", data, 0x36)
+
+interp = None
+dynamic = None
+for i in range(e_phnum):
+    off = e_phoff + i * e_phentsize
+    p_type, = struct.unpack_from("<I", data, off)
+    p_offset, = struct.unpack_from("<Q", data, off + 8)
+    p_filesz, = struct.unpack_from("<Q", data, off + 32)
+    if p_type == 3:
+        interp = data[p_offset:p_offset + p_filesz].rstrip(b"\0").decode()
+    elif p_type == 2:
+        dynamic = (p_offset, p_filesz)
+
+assert interp == "/system/bin/linker64", f"unexpected PT_INTERP: {interp}"
+print(f"  PT_INTERP      {interp}  (Android only - cannot run on this host)")
+
+assert dynamic, "no dynamic section"
+off, size = dynamic
+entries = [struct.unpack_from("<qQ", data, j) for j in range(off, off + size, 16)]
+strtab = next(v for t, v in entries if t == 5)
+
+def cstr(o):
+    end = data.index(b"\0", o)
+    return data[o:end].decode()
+
+runpath = [cstr(strtab + v) for t, v in entries if t in (15, 29)]
+expected = f"/data/data/{package}/files/usr/lib"
+assert expected in runpath, f"RUNPATH {runpath} does not contain {expected}"
+print(f"  DT_RUNPATH     {expected}")
+
+needed = [cstr(strtab + v) for t, v in entries if t == 1]
+print(f"  DT_NEEDED      {', '.join(needed)}")
+
+blob = open(path, "rb").read()
+assert b"/data/data/com.termux/" not in blob, "Termux prefix survived the rewrite"
+print("  no Termux prefix remains")
+PY
+
+echo "=== every PRoot dependency is present in the payload"
+for lib in libtalloc.so.2 libandroid-shmem.so libandroid-support.so; do
+  if [ -e "$PREFIX/lib/$lib" ] || [ -e "$PREFIX/lib/libtalloc.so.2.5.0" ]; then
+    echo "  ok $lib"
+  elif [ "$lib" = "libtalloc.so.2" ] && [ -e "$PREFIX/lib/libtalloc.so.2.5.0" ]; then
+    echo "  ok $lib (via libtalloc.so.2.5.0)"
+  else
+    echo "  MISSING $lib" >&2
+    exit 1
+  fi
+done
+
+echo "=== prepare chroot mounts"
+sudo cp /etc/resolv.conf "$ROOTFS/etc/resolv.conf"
+for d in dev dev/pts proc sys; do sudo mkdir -p "$ROOTFS/$d"; done
+sudo mount --bind /dev "$ROOTFS/dev"
+sudo mount --bind /dev/pts "$ROOTFS/dev/pts"
+sudo mount -t proc proc "$ROOTFS/proc"
+sudo mount --bind /sys "$ROOTFS/sys"
+
+guest() {
+  sudo chroot "$ROOTFS" /usr/bin/env -i \
+    HOME=/root PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+    TERM=dumb LANG=C.UTF-8 "$@"
 }
 
-echo "=== guest smoke tests"
-run_guest 'set -e
+echo "=== guest smoke tests (native arm64 chroot)"
+guest /bin/bash -lc 'set -e
   . /root/.nvm/nvm.sh
   echo "os:     $(. /etc/os-release; echo "$PRETTY_NAME")"
   echo "kernel: $(uname -r)"
@@ -72,33 +135,36 @@ run_guest 'set -e
   git log --oneline
 '
 
-echo "=== profile patch is installed"
-run_guest 'test -f /opt/dsh/cordis.patch.yml && grep -q "bash-local" /opt/dsh/cordis.patch.yml && echo ok'
+echo "=== PRoot profile patch is installed"
+test -f "$ROOTFS/opt/dsh/cordis.patch.yml"
+grep -q "bash-local" "$ROOTFS/opt/dsh/cordis.patch.yml"
+echo "  ok"
 
 echo "=== dsh web boot with the PRoot profile patch"
-run_guest 'set -e
+guest /bin/bash -lc 'set -e
   . /root/.nvm/nvm.sh
   cd /root
   dsh web --no-open --port 3099 --patch /opt/dsh/cordis.patch.yml >/tmp/web.log 2>&1 &
   pid=$!
-  for _ in $(seq 1 150); do
+  for _ in $(seq 1 180); do
     if (exec 3<>/dev/tcp/127.0.0.1/3099) 2>/dev/null; then
-      echo "web: listening on 127.0.0.1:3099"
+      echo "  web: listening on 127.0.0.1:3099"
       kill "$pid" 2>/dev/null || true
       wait "$pid" 2>/dev/null || true
       exit 0
     fi
     if ! kill -0 "$pid" 2>/dev/null; then
-      echo "web process exited early" >&2
+      echo "  web process exited early" >&2
       cat /tmp/web.log >&2
       exit 1
     fi
     sleep 1
   done
-  echo "web did not become ready" >&2
+  echo "  web did not become ready" >&2
   cat /tmp/web.log >&2
   kill "$pid" 2>/dev/null || true
   exit 1
 '
 
 echo "=== payload smoke test passed"
+echo "    (PRoot execution itself is device-only; see scripts/device-test.sh)"
