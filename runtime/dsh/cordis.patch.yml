@@ -1,30 +1,31 @@
-# Profile patch applied on top of the shipped `web` profile.
+# Profile layer applied on top of the shipped `web` profile.
 #
 # Why this file exists
 # --------------------
 # `dsh-base` mounts `@deepseek-ai/dsh-bash-sandbox` as the bash executor. That
-# executor wraps every command with `ctx.sandbox` (`dsh-sandbox-local`), which on
-# Linux requires a working `bwrap` or Landlock runner. Inside PRoot neither is
-# available: PRoot is a ptrace-based userland emulator, not a kernel confinement
+# executor wraps every command through `ctx.sandbox` (`dsh-sandbox-local`), which
+# on Linux requires a working `bwrap` or Landlock runner. Inside PRoot neither
+# exists: PRoot is a ptrace-based userland emulator, not a kernel confinement
 # mechanism. The provider is fail-closed, so every bash call would fail with
 # SANDBOX_UNAVAILABLE instead of running.
 #
-# This patch swaps the *executor* for the unconfined local one. It deliberately
-# keeps everything else intact:
-#   - `sandbox` / `sandbox-policy` stay mounted, so `fs-sandbox` still fences
+# This layer swaps the *executor* only:
+#   - `bash-sandbox` is disabled by id and `bash-local` is inserted in its place;
+#   - `sandbox` / `sandbox-policy` stay mounted, so `fs-sandbox` keeps fencing
 #     file writes through ctx.fs;
-#   - `approval` and `permission` still gate tool calls;
-#   - the agent can run bash, which is the point of the app.
+#   - `approval` and `permission` still gate tool calls.
 #
-# Both executors register the same `bash` service, so disabling one and
-# enabling the other in the same layer is the supported swap (see the base
-# bundle README: an incomplete recipe fails at load).
+# Patch syntax notes (see apps/cli/reference/README.md):
+#   - a bare `- id:` row *modifies* an existing entry and fails if the id is
+#     absent;
+#   - new rows must be wrapped in `insert:`.
 
 - id: bash-sandbox
   disabled: true
 
-- id: bash-local
-  name: '@deepseek-ai/dsh-bash-local'
-  config:
-    timeoutMs: 60000
-    maxTimeoutMs: 600000
+- insert:
+    - id: bash-local
+      name: '@deepseek-ai/dsh-bash-local'
+      config:
+        timeoutMs: 60000
+        maxTimeoutMs: 600000
