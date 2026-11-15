@@ -18,10 +18,12 @@ object TarExtractor {
 
     fun extract(gzip: InputStream, destination: File, onProgress: (Long) -> Unit = {}) {
         destination.mkdirs()
-        val tar = GZIPInputStream(gzip, 1 shl 16)
+        val counting = CountingInputStream(gzip)
+        val tar = GZIPInputStream(counting, 1 shl 16)
         val header = ByteArray(512)
         var pendingName: String? = null
         var pendingLink: String? = null
+        var lastReported = 0L
         var count = 0L
 
         while (true) {
@@ -102,8 +104,32 @@ object TarExtractor {
             skipFully(tar, padded(size) - size)
 
             count++
-            if (count % 2000L == 0L) onProgress(count)
+            if (counting.count - lastReported >= 1 shl 20) {
+                lastReported = counting.count
+                onProgress(counting.count)
+            }
         }
+        onProgress(counting.count)
+    }
+
+    /** Counts compressed bytes read so extraction progress tracks the payload size. */
+    private class CountingInputStream(private val delegate: InputStream) : InputStream() {
+        var count: Long = 0
+            private set
+
+        override fun read(): Int {
+            val value = delegate.read()
+            if (value >= 0) count++
+            return value
+        }
+
+        override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+            val read = delegate.read(buffer, offset, length)
+            if (read > 0) count += read
+            return read
+        }
+
+        override fun close() = delegate.close()
     }
 
     private fun copyFile(source: File, target: File) {

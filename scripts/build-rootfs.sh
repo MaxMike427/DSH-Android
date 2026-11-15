@@ -174,8 +174,8 @@ if grep -rqF -- "/data/data/com.termux/files/usr" "$PROOT_DIR/usr" 2>/dev/null; 
 fi
 
 log "package payloads"
-sudo tar -C "$ROOTFS" --numeric-owner --owner=0 --group=0 -cf - . | gzip -9 -T0 > "$OUT_DIR/rootfs.tar.gz"
-sudo tar -C "$PROOT_DIR" --numeric-owner --owner=0 --group=0 -cf - . | gzip -9 -T0 > "$OUT_DIR/proot.tar.gz"
+sudo tar -C "$ROOTFS" --numeric-owner --owner=0 --group=0 -cf - . | gzip -9 > "$OUT_DIR/rootfs.tar.gz"
+sudo tar -C "$PROOT_DIR" --numeric-owner --owner=0 --group=0 -cf - . | gzip -9 > "$OUT_DIR/proot.tar.gz"
 
 log "manifest"
 ROOTFS_BYTES="$(stat -c%s "$OUT_DIR/rootfs.tar.gz")"

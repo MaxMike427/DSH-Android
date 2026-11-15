@@ -84,12 +84,17 @@ class DshRuntime(
             val manifest = assets.open("runtime-manifest.json").bufferedReader().use { it.readText() }
             val stamp = "installed:${manifest.hashCode()}:${BuildConfigPayload.VERSION}"
 
+            val prootBytes = assets.openFd("proot.tar.gz").use { it.length }
+            val rootfsBytes = assets.openFd("rootfs.tar.gz").use { it.length }
+            val totalBytes = (prootBytes + rootfsBytes).coerceAtLeast(1)
+
             // PRoot first: it is small, and a failed rootfs extract must not leave
             // a marker that claims a usable install.
-            _state.value = RuntimeState.Installing("Extracting PRoot", 0.02f)
+            _state.value = RuntimeState.Installing("Extracting PRoot", 0.01f)
             assets.open("proot.tar.gz").use { input ->
-                TarExtractor.extract(input, paths.prefix) { count ->
-                    onProgress(0.02f + (count / 2000f).coerceAtMost(1f) * 0.08f, "Extracting PRoot")
+                TarExtractor.extract(input, paths.prefix) { done ->
+                    val fraction = 0.01f + (done.toFloat() / totalBytes) * 0.09f
+                    onProgress(fraction.coerceIn(0.01f, 0.10f), "Extracting PRoot")
                 }
             }
             listOf(
@@ -102,9 +107,9 @@ class DshRuntime(
 
             _state.value = RuntimeState.Installing("Extracting Ubuntu", 0.10f)
             assets.open("rootfs.tar.gz").use { input ->
-                TarExtractor.extract(input, paths.rootfs) { count ->
-                    val fraction = (0.10f + (count / 60_000f).coerceAtMost(1f) * 0.88f)
-                    onProgress(fraction, "Extracting Ubuntu")
+                TarExtractor.extract(input, paths.rootfs) { done ->
+                    val fraction = 0.10f + (done.toFloat() / totalBytes) * 0.89f
+                    onProgress(fraction.coerceIn(0.10f, 0.99f), "Extracting Ubuntu")
                 }
             }
 
