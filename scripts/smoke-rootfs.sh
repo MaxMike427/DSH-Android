@@ -34,7 +34,7 @@ sudo chown -R "$(id -u):$(id -g)" "/data/data/$PACKAGE"
 mkdir -p "$WORK"
 
 echo "=== unpack PRoot payload"
-tar -xzf "$ASSETS/proot.tar.gz" -C "$FILES"
+tar -xJf "$ASSETS/proot.tar.xz" -C "$FILES"
 chmod +x "$PREFIX/bin/proot" "$PREFIX/libexec/proot/loader"
 
 echo "=== unpack rootfs"

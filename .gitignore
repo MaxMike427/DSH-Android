@@ -8,7 +8,7 @@ captures/
 .cxx/
 # Generated offline runtime payload (built in CI, never committed)
 app/src/main/assets/rootfs.tar.xz
-app/src/main/assets/proot.tar.gz
+app/src/main/assets/proot.tar.xz
 app/src/main/assets/runtime-manifest.json
 
 dist/

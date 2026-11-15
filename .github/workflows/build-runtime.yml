@@ -59,7 +59,7 @@ jobs:
           # root so app/src/main/assets is reproduced exactly.
           path: |
             app/src/main/assets/rootfs.tar.xz
-            app/src/main/assets/proot.tar.gz
+            app/src/main/assets/proot.tar.xz
             app/src/main/assets/runtime-manifest.json
           if-no-files-found: error
           retention-days: 14
@@ -82,7 +82,7 @@ jobs:
         # files are located by name rather than assumed to land in place.
         run: |
           mkdir -p app/src/main/assets
-          for name in rootfs.tar.xz proot.tar.gz runtime-manifest.json; do
+          for name in rootfs.tar.xz proot.tar.xz runtime-manifest.json; do
             found="$(find payload -name "$name" -type f -print -quit)"
             if [ -z "$found" ]; then
               echo "payload artifact is missing $name" >&2
@@ -111,7 +111,7 @@ jobs:
           [ -n "$apk" ] || { echo "no APK produced" >&2; exit 1; }
           echo "APK: $apk ($(stat -c%s "$apk") bytes)"
           listing="$(unzip -l "$apk" | awk '{print $4}')"
-          for entry in assets/proot.tar.gz assets/rootfs.tar.xz assets/runtime-manifest.json; do
+          for entry in assets/proot.tar.xz assets/rootfs.tar.xz assets/runtime-manifest.json; do
             if printf '%s\n' "$listing" | grep -qxF "$entry"; then
               echo "  ok $entry"
             else

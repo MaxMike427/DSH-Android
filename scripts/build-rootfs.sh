@@ -9,7 +9,7 @@
 #
 # Outputs (consumed by the app from src/main/assets):
 #   rootfs.tar.xz          Ubuntu 24.04.x arm64 + git/nvm/node/npm/pnpm/dsh
-#   proot.tar.gz           Termux PRoot with the app prefix patched in
+#   proot.tar.xz           Termux PRoot with the app prefix patched in
 #   runtime-manifest.json  pinned versions and sizes
 set -euo pipefail
 
@@ -216,16 +216,16 @@ cp -a "$PROOT_DIR/usr" "$PAYLOAD_DIR/usr"
 
 log "package payloads"
 # Use xz for the rootfs: it compresses ~2x better than gzip on this content, and
-# the app decompresses it once. proot.tar.gz stays gzip (it is only 179 KiB).
+# the app decompresses it once. PRoot uses the same format for consistency.
 sudo tar -C "$ROOTFS" --numeric-owner --owner=0 --group=0 -cf - . \
   | xz -9 -T0 --check=crc32 > "$OUT_DIR/rootfs.tar.xz"
-tar -C "$PAYLOAD_DIR" --numeric-owner --owner=0 --group=0 -cf - . | gzip -9 > "$OUT_DIR/proot.tar.gz"
+tar -C "$PAYLOAD_DIR" --numeric-owner --owner=0 --group=0 -cf - . | xz -9 -T0 --check=crc32 > "$OUT_DIR/proot.tar.xz"
 
 log "manifest"
 ROOTFS_BYTES="$(stat -c%s "$OUT_DIR/rootfs.tar.xz")"
-PROOT_BYTES="$(stat -c%s "$OUT_DIR/proot.tar.gz")"
+PROOT_BYTES="$(stat -c%s "$OUT_DIR/proot.tar.xz")"
 ROOTFS_SHA="$(sha256sum "$OUT_DIR/rootfs.tar.xz" | cut -d' ' -f1)"
-PROOT_SHA="$(sha256sum "$OUT_DIR/proot.tar.gz" | cut -d' ' -f1)"
+PROOT_SHA="$(sha256sum "$OUT_DIR/proot.tar.xz" | cut -d' ' -f1)"
 
 ROOTFS_BYTES="$ROOTFS_BYTES" PROOT_BYTES="$PROOT_BYTES" \
 ROOTFS_SHA="$ROOTFS_SHA" PROOT_SHA="$PROOT_SHA" \
@@ -253,7 +253,7 @@ manifest = {
         "sha256": env("ROOTFS_SHA"),
     },
     "prootPayload": {
-        "file": "proot.tar.gz",
+        "file": "proot.tar.xz",
         "bytes": int(env("PROOT_BYTES", "0")),
         "sha256": env("PROOT_SHA"),
     },
