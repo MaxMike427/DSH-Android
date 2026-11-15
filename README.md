@@ -51,8 +51,31 @@ Payload build (requires an arm64 Linux host):
 
 ```sh
 bash scripts/build-rootfs.sh   # writes app/src/main/assets/*
-bash scripts/smoke-rootfs.sh   # unpacks it and runs dsh through PRoot
+bash scripts/smoke-rootfs.sh   # host-side checks through chroot
 ```
+
+Payload and APK sizes: the rootfs is 183 MiB compressed (XZ), the APK ~210 MiB.
+It is signed with the debug key; for a distributable build, add a release
+signing config and run `:app:assembleRelease`.
+
+## Download
+
+Prebuilt APKs are attached to [Releases](https://github.com/MaxMike427/DSH-Android/releases):
+
+```sh
+adb install -r dsh-android-arm64.apk
+```
+
+## Verify on a device
+
+```sh
+bash scripts/device-test.sh
+```
+
+This is the only check that exercises PRoot itself: it links against Android's
+`/system/bin/linker64` and cannot run on a Linux host. The script runs PRoot via
+`run-as`, prints every tool's version, does a real `git init/commit`, and curls
+the Web UI through `adb forward`.
 
 ## Layout
 

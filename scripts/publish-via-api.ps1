@@ -35,9 +35,9 @@ Write-Host "uploading $($all.Count) files to $Repo"
 
 # A brand-new repository has no commit, and the Git data API refuses to create
 # blobs until one exists. Seed the default branch through the contents API.
-$seeded = $false
 $headRef = & gh api "/repos/$Repo/git/ref/heads/$Branch" 2>$null | Out-String
-if ($LASTEXITCODE -ne 0 -or -not $headRef.Trim()) {
+$branchExists = ($LASTEXITCODE -eq 0 -and $headRef.Trim())
+if (-not $branchExists) {
     $seedPath = "README.md"
     if (-not ($all -contains $seedPath)) { $seedPath = ($all | Select-Object -First 1) }
     $seedFull = Join-Path $root $seedPath
@@ -50,8 +50,22 @@ if ($LASTEXITCODE -ne 0 -or -not $headRef.Trim()) {
         "-X", "PUT", "/repos/$Repo/contents/$([uri]::EscapeDataString($seedPath))"
     ) -Body $seedBody | Out-Null
     $all = $all | Where-Object { $_ -ne $seedPath }
-    $seeded = $true
     Write-Host "seeded branch with $seedPath"
+}
+
+# Reuse blobs that already exist with identical content so a republish only
+# uploads what actually changed (and stays well under the proxy body limit).
+$existing = @{}
+if ($branchExists) {
+    $headSha = ($headRef | ConvertFrom-Json).object.sha
+    $treeSha = (& gh api "/repos/$Repo/git/commits/$headSha" --jq '.tree.sha' 2>$null | Out-String).Trim()
+    if ($LASTEXITCODE -eq 0 -and $treeSha) {
+        $raw = & gh api "/repos/$Repo/git/trees/$treeSha`?recursive=1" --jq '.tree[] | select(.type=="blob") | "\(.path)`t\(.sha)"' 2>$null
+        foreach ($line in $raw) {
+            $parts = $line -split "`t", 2
+            if ($parts.Count -eq 2) { $existing[$parts[0]] = $parts[1] }
+        }
+    }
 }
 
 $entries = @()
@@ -60,6 +74,21 @@ foreach ($relative in $all) {
     $full = Join-Path $root $relative
     if (-not (Test-Path $full -PathType Leaf)) { continue }
     $bytes = [IO.File]::ReadAllBytes($full)
+
+    # Git's blob id is sha1("blob <len>\0" + content); comparing that against the
+    # remote tree reuses unchanged blobs without uploading them again.
+    $sha1 = [Security.Cryptography.SHA1]::Create()
+    $header = [Text.Encoding]::ASCII.GetBytes("blob $($bytes.Length)`0")
+    $concat = New-Object byte[] ($header.Length + $bytes.Length)
+    [Array]::Copy($header, 0, $concat, 0, $header.Length)
+    [Array]::Copy($bytes, 0, $concat, $header.Length, $bytes.Length)
+    $gitSha = ([BitConverter]::ToString($sha1.ComputeHash($concat)) -replace '-', '').ToLowerInvariant()
+
+    if ($existing.ContainsKey($path) -and $existing[$path] -eq $gitSha) {
+        $entries += @{ path = $path; mode = "100644"; type = "blob"; sha = $gitSha }
+        continue
+    }
+
     $blob = Invoke-GhJson -Arguments @(
         "-X", "POST", "/repos/$Repo/git/blobs"
     ) -Body @{
@@ -67,7 +96,7 @@ foreach ($relative in $all) {
         encoding = "base64"
     }
     $entries += @{ path = $path; mode = "100644"; type = "blob"; sha = $blob.sha }
-    Write-Host "  blob $path"
+    Write-Host "  blob $path ($($bytes.Length) bytes)"
 }
 
 # Preserve the executable bit for shell scripts.
@@ -97,9 +126,12 @@ $commit = Invoke-GhJson -Arguments @(
 ) -Body $commitBody
 
 if ($parentSha) {
+    # force is required: the tree was uploaded before this ref lookup, so a
+    # concurrent publish can advance the branch in between. The local tree is
+    # authoritative for this publish, so reset the ref to it.
     Invoke-GhJson -Arguments @(
         "-X", "PATCH", "/repos/$Repo/git/refs/heads/$Branch"
-    ) -Body @{ sha = $commit.sha; force = $false } | Out-Null
+    ) -Body @{ sha = $commit.sha; force = $true } | Out-Null
 } else {
     Invoke-GhJson -Arguments @(
         "-X", "POST", "/repos/$Repo/git/refs"
