@@ -130,6 +130,29 @@ class DshRuntime(
 
             // Keep guest /root on app storage so upgrades of the rootfs can keep data.
             paths.home.mkdirs()
+
+            // The tar reader stops silently at a truncated stream, so verify the
+            // tree is actually complete before declaring success: a missing
+            // /bin/bash or /etc/os-release means extraction was cut short.
+            val required = listOf(
+                File(paths.rootfs, "bin/bash"),
+                File(paths.rootfs, "usr/bin/env"),
+                File(paths.rootfs, "etc/os-release"),
+                File(paths.rootfs, "opt/dsh/cordis.patch.yml"),
+                paths.proot,
+                paths.prootLoader,
+            )
+            val missing = required.filterNot { it.exists() }
+            if (missing.isNotEmpty()) {
+                val names = missing.joinToString { it.absolutePath }
+                log(LogLine.LogStream.SYSTEM, "install: incomplete extraction, missing $names")
+                _state.value = RuntimeState.Failed(
+                    "Extraction incomplete",
+                    "missing: $names",
+                )
+                return@withContext
+            }
+
             paths.installMarker.writeText(stamp)
             log(LogLine.LogStream.SYSTEM, "install: complete")
 

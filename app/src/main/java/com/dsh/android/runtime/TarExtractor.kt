@@ -23,6 +23,8 @@ object TarExtractor {
     /** Rootfs payload: XZ-compressed tar (much smaller than gzip for this tree). */
     fun extractXz(input: InputStream, destination: File, onProgress: (Long) -> Unit = {}) {
         val counting = CountingInputStream(input)
+        // XZInputStream decodes one stream; the payload is written as a single
+        // stream by `tar | xz`, so this is correct for both archives.
         val xz = org.tukaani.xz.XZInputStream(counting, null)
         extractTar(xz, counting, destination, onProgress)
     }
