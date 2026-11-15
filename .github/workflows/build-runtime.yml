@@ -100,6 +100,11 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
+      - name: Run unit tests
+        # Extraction bugs only surface on a device otherwise; these tests cover
+        # the tar reader, including truncated and escaping archives.
+        run: ./gradlew :app:testDebugUnitTest --no-daemon
+
       - name: Assemble debug APK
         run: ./gradlew :app:assembleDebug --no-daemon
 
