@@ -59,7 +59,18 @@ class DshRuntime(
 
     fun log(stream: LogLine.LogStream, text: String) {
         _logs.value = (_logs.value + LogLine(stream, text)).takeLast(MAX_LOG_LINES)
+        // Mirror to disk: the UI is not reachable when the app crashes or the
+        // failure happens during early extraction, and `run-as cat` is the only
+        // way to read it back on a device.
+        runCatching {
+            paths.ensureDirectories()
+            File(paths.logs, "app.log").appendText("${timestamp()} ${stream.name} $text\n")
+        }
     }
+
+    private fun timestamp(): String =
+        java.text.SimpleDateFormat("MM-dd HH:mm:ss.SSS", java.util.Locale.US)
+            .format(java.util.Date())
 
     suspend fun refreshState() = withContext(Dispatchers.IO) {
         paths.ensureDirectories()
@@ -80,14 +91,17 @@ class DshRuntime(
 
         try {
             _state.value = RuntimeState.Installing("Preparing storage", 0f)
+            log(LogLine.LogStream.SYSTEM, "install: begin")
 
             val assets = context.assets
             val manifest = assets.open("runtime-manifest.json").bufferedReader().use { it.readText() }
             val stamp = "installed:${manifest.hashCode()}:${BuildConfigPayload.VERSION}"
+            log(LogLine.LogStream.SYSTEM, "install: manifest ok")
 
             val prootBytes = assets.openFd("proot.tar.gz").use { it.length }
             val rootfsBytes = assets.openFd("rootfs.tar.xz").use { it.length }
             val totalBytes = (prootBytes + rootfsBytes).coerceAtLeast(1)
+            log(LogLine.LogStream.SYSTEM, "install: proot=$prootBytes rootfs=$rootfsBytes")
 
             // PRoot first: it is small, and a failed rootfs extract must not leave
             // a marker that claims a usable install.
@@ -117,6 +131,7 @@ class DshRuntime(
             // Keep guest /root on app storage so upgrades of the rootfs can keep data.
             paths.home.mkdirs()
             paths.installMarker.writeText(stamp)
+            log(LogLine.LogStream.SYSTEM, "install: complete")
 
             _state.value = RuntimeState.Stopped(null)
         } catch (t: Throwable) {
