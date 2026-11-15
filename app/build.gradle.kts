@@ -55,8 +55,9 @@ android {
     }
 
     androidResources {
-        // Runtime payload archives are already compressed.
-        noCompress += listOf("zst")
+        // Runtime payload archives are already compressed; re-compressing them
+        // wastes install time and shrinks nothing.
+        noCompress += listOf("zst", "xz", "gz")
     }
 }
 

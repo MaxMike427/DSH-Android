@@ -110,11 +110,13 @@ jobs:
           apk="$(find app/build/outputs/apk/debug -name '*.apk' -print -quit)"
           [ -n "$apk" ] || { echo "no APK produced" >&2; exit 1; }
           echo "APK: $apk ($(stat -c%s "$apk") bytes)"
+          listing="$(unzip -l "$apk" | awk '{print $4}')"
           for entry in assets/proot.tar.gz assets/rootfs.tar.xz assets/runtime-manifest.json; do
-            if unzip -l "$apk" | grep -qF " $entry"; then
+            if printf '%s\n' "$listing" | grep -qxF "$entry"; then
               echo "  ok $entry"
             else
               echo "  MISSING $entry" >&2
+              printf '%s\n' "$listing" | grep -i assets >&2 || true
               exit 1
             fi
           done
