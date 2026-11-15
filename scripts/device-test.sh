@@ -45,6 +45,18 @@ say "guest toolchain versions"
 say "git works in the guest"
 "${ADB[@]}" shell "run-as $PACKAGE sh -c 'cd $FILES && PROOT_TMP_DIR=$FILES/tmp PROOT_NO_SECCOMP=1 PROOT_LOADER=$FILES/usr/libexec/proot/loader $FILES/usr/bin/proot --kill-on-exit --link2symlink -0 -r $FILES/rootfs -b /dev -b /proc -b /sys -w /root /usr/bin/env -i HOME=/root PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin /bin/bash -lc \"cd /root && rm -rf dt && git init -q dt && cd dt && echo hi > a && git add a && git -c user.email=a@b -c user.name=a commit -qm init && git log --oneline\"'"
 
+say "shared storage is mounted read-write"
+# Writes a probe file through the guest and reads it back from the Android side,
+# which proves the bind actually crosses the sandbox boundary.
+STORAGE_TEST="/storage/emulated/0/Download/dsh-mount-test.txt"
+if "${ADB[@]}" shell "run-as $PACKAGE ls $FILES/rootfs >/dev/null 2>&1"; then :; fi
+"${ADB[@]}" shell "run-as $PACKAGE sh -c 'cd $FILES && PROOT_TMP_DIR=$FILES/tmp PROOT_NO_SECCOMP=1 PROOT_LOADER=$FILES/usr/libexec/proot/loader $FILES/usr/bin/proot --kill-on-exit --link2symlink -0 -r $FILES/rootfs -b /dev -b /proc -b /sys -b /storage/emulated/0/Download:/mnt/android/download -w /root /usr/bin/env -i HOME=/root PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin /bin/bash -lc \"echo dsh-ok > /mnt/android/download/dsh-mount-test.txt && cat /mnt/android/download/dsh-mount-test.txt\"'" \
+  || fail "could not write through /mnt/android/download (is all-files access granted?)"
+"${ADB[@]}" shell "cat $STORAGE_TEST" | grep -q "dsh-ok" \
+  || fail "guest write did not reach $STORAGE_TEST"
+echo "  guest wrote $STORAGE_TEST"
+"${ADB[@]}" shell "rm -f $STORAGE_TEST" || true
+
 say "dsh web is serving"
 "${ADB[@]}" shell "run-as $PACKAGE sh -c 'cat $FILES/logs/dsh-web.log | tail -n 20'" || true
 "${ADB[@]}" forward tcp:3080 tcp:3080 >/dev/null
