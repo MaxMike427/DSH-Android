@@ -3,17 +3,22 @@ package com.dsh.android.ui
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import android.content.Context
 import com.dsh.android.DshApplication
 import com.dsh.android.runtime.DshRuntime
 import com.dsh.android.runtime.LogLine
 import com.dsh.android.runtime.RuntimeState
+import com.dsh.android.storage.StorageAccess
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
-class DshViewModel(private val runtime: DshRuntime) : ViewModel() {
+class DshViewModel(
+    private val appContext: Context,
+    private val runtime: DshRuntime,
+) : ViewModel() {
 
     val state: StateFlow<RuntimeState> = runtime.state
     val logs: StateFlow<List<LogLine>> = runtime.logs
@@ -24,14 +29,24 @@ class DshViewModel(private val runtime: DshRuntime) : ViewModel() {
     private val _terminalOutput = MutableStateFlow<List<String>>(emptyList())
     val terminalOutput: StateFlow<List<String>> = _terminalOutput
 
+    private val _mountSummary = MutableStateFlow<List<String>>(emptyList())
+    val mountSummary: StateFlow<List<String>> = _mountSummary
+
     init {
         viewModelScope.launch {
             runtime.refreshState()
+            refreshMounts()
             if (runtime.state.value is RuntimeState.NotInstalled) {
                 install()
             } else {
                 start()
             }
+        }
+    }
+
+    fun refreshMounts() {
+        _mountSummary.value = StorageAccess.mountPoints(appContext).map { (name, dir) ->
+            "${StorageAccess.guestPath(name)}  <-  ${dir.absolutePath}"
         }
     }
 
@@ -75,7 +90,7 @@ class DshViewModel(private val runtime: DshRuntime) : ViewModel() {
         fun factory(app: DshApplication): ViewModelProvider.Factory = object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST")
             override fun <T : ViewModel> create(modelClass: Class<T>): T {
-                return DshViewModel(app.runtime) as T
+                return DshViewModel(app.applicationContext, app.runtime) as T
             }
         }
     }

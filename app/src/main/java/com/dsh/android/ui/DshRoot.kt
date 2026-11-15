@@ -56,6 +56,7 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import com.dsh.android.runtime.LogLine
 import com.dsh.android.runtime.RuntimeState
+import com.dsh.android.storage.StorageAccessCard
 
 private val DarkColors = darkColorScheme(
     primary = Color(0xFF7AB7FF),
@@ -70,20 +71,22 @@ private val DarkColors = darkColorScheme(
 fun DshRoot(
     state: RuntimeState,
     logs: List<LogLine>,
+    mountSummary: List<String>,
     onInstall: () -> Unit,
     onStart: () -> Unit,
     onStop: () -> Unit,
     onOpenLogs: () -> Unit,
     onExec: (String) -> Unit,
+    onMountsChanged: () -> Unit,
 ) {
     MaterialTheme(colorScheme = DarkColors) {
         Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
             when (state) {
-                is RuntimeState.NotInstalled -> InstallScreen(state = state, onInstall = onInstall)
-                is RuntimeState.Installing -> InstallScreen(state = state, onInstall = onInstall)
+                is RuntimeState.NotInstalled -> InstallScreen(state, onInstall, mountSummary, onMountsChanged)
+                is RuntimeState.Installing -> InstallScreen(state, onInstall, mountSummary, onMountsChanged)
                 is RuntimeState.Starting -> StartingScreen(state)
                 is RuntimeState.Running -> WebScreen(state, logs, onStop)
-                is RuntimeState.Stopped -> InstallScreen(state = state, onInstall = onStart)
+                is RuntimeState.Stopped -> InstallScreen(state, onStart, mountSummary, onMountsChanged)
                 is RuntimeState.Failed -> FailureScreen(state, logs, onStart, onOpenLogs)
             }
         }
@@ -91,13 +94,18 @@ fun DshRoot(
 }
 
 @Composable
-private fun InstallScreen(state: RuntimeState, onInstall: () -> Unit) {
+private fun InstallScreen(
+    state: RuntimeState,
+    onInstall: () -> Unit,
+    mountSummary: List<String>,
+    onMountsChanged: () -> Unit,
+) {
     Column(
         modifier = Modifier
             .fillMaxSize()
             .statusBarsPadding()
             .navigationBarsPadding()
-            .padding(28.dp),
+            .padding(24.dp),
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
@@ -107,7 +115,7 @@ private fun InstallScreen(state: RuntimeState, onInstall: () -> Unit) {
             "DeepSeekRuntime · Ubuntu 24.04 · ARM64",
             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
         )
-        Spacer(Modifier.height(40.dp))
+        Spacer(Modifier.height(28.dp))
 
         when (state) {
             is RuntimeState.Installing -> {
@@ -119,7 +127,7 @@ private fun InstallScreen(state: RuntimeState, onInstall: () -> Unit) {
             is RuntimeState.Stopped -> {
                 if (state.reason != null) {
                     Text(state.reason, fontSize = 13.sp, color = Color(0xFFFFB4AB))
-                    Spacer(Modifier.height(16.dp))
+                    Spacer(Modifier.height(12.dp))
                 }
                 Button(onClick = onInstall) { Text("Start DeepSeekRuntime") }
             }
@@ -128,6 +136,9 @@ private fun InstallScreen(state: RuntimeState, onInstall: () -> Unit) {
                 Button(onClick = onInstall) { Text("Set up environment") }
             }
         }
+
+        Spacer(Modifier.height(24.dp))
+        StorageAccessCard(mountSummary = mountSummary, onMountsChanged = onMountsChanged)
     }
 }
 

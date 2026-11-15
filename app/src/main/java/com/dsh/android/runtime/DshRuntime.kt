@@ -2,6 +2,7 @@ package com.dsh.android.runtime
 
 import android.content.Context
 import android.system.Os
+import com.dsh.android.storage.StorageAccess
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.awaitClose
@@ -219,7 +220,14 @@ class DshRuntime(
             paths.proot.absolutePath,
             "--kill-on-exit",
             "--link2symlink",
+            // Fake root for the guest (apt, nvm and npm expect it), but map the
+            // guest's root identity onto the app's real uid/gid. Without
+            // -i/-k PRoot leaves host files owned by the app's uid while the
+            // guest believes it is root; with them, files created in shared
+            // storage stay readable by the Android apps that own it.
             "-0",
+            "-i", android.os.Process.myUid().toString(),
+            "-k", android.os.Process.myUid().toString(),
             "-r", paths.rootfs.absolutePath,
             "-b", "/dev",
             "-b", "/proc",
@@ -230,6 +238,13 @@ class DshRuntime(
         )
         if (paths.resolvConf.isFile) cmd += listOf("-b", "${paths.resolvConf.absolutePath}:/etc/resolv.conf")
         if (paths.hostsFile.isFile) cmd += listOf("-b", "${paths.hostsFile.absolutePath}:/etc/hosts")
+
+        // Android shared storage. Bind each existing directory individually so a
+        // missing one (or a denied permission) never aborts the whole spawn.
+        StorageAccess.mountPoints(context).forEach { (name, dir) ->
+            if (dir.isDirectory) cmd += listOf("-b", "${dir.absolutePath}:${StorageAccess.guestPath(name)}")
+        }
+
         cmd += guestCommand
         return cmd
     }
