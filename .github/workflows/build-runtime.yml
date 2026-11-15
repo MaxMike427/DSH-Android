@@ -55,6 +55,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: dsh-runtime-arm64
+          # Keep repo-relative paths; the apk job downloads into the workspace
+          # root so app/src/main/assets is reproduced exactly.
           path: |
             app/src/main/assets/rootfs.tar.xz
             app/src/main/assets/proot.tar.gz
@@ -73,16 +75,23 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: dsh-runtime-arm64
-          # Uploaded with its repo-relative path, so download reproduces
-          # app/src/main/assets/* under the workspace root.
-          path: .
+          path: payload
 
-      - name: Verify payload landed in assets
+      - name: Place payload in assets
+        # Artifact path semantics differ between upload/download versions, so the
+        # files are located by name rather than assumed to land in place.
         run: |
+          mkdir -p app/src/main/assets
+          for name in rootfs.tar.xz proot.tar.gz runtime-manifest.json; do
+            found="$(find payload -name "$name" -type f -print -quit)"
+            if [ -z "$found" ]; then
+              echo "payload artifact is missing $name" >&2
+              find payload -maxdepth 4 -type f >&2 || true
+              exit 1
+            fi
+            cp "$found" "app/src/main/assets/$name"
+          done
           ls -lh app/src/main/assets
-          test -s app/src/main/assets/rootfs.tar.xz
-          test -s app/src/main/assets/proot.tar.gz
-          test -s app/src/main/assets/runtime-manifest.json
 
       - uses: actions/setup-java@v4
         with:
