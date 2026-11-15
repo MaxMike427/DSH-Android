@@ -1,0 +1,92 @@
+name: build-runtime
+
+# The payload must be produced on native ARM64 Linux: it extracts Ubuntu Base
+# and executes its binaries to install Node.js and DeepSeekRuntime.
+on:
+  workflow_dispatch:
+    inputs:
+      ubuntu_version:
+        description: Ubuntu Base 24.04.x point release
+        required: false
+        default: "24.04.5"
+      dsh_version:
+        description: DeepSeekRuntime npm version
+        required: false
+        default: "0.2.2-rc.3"
+  push:
+    branches: [main]
+    paths:
+      - "scripts/build-rootfs.sh"
+      - "scripts/patch-proot-prefix.sh"
+      - "scripts/smoke-rootfs.sh"
+      - ".github/workflows/build-runtime.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  payload:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Host facts
+        run: uname -a && df -h /
+
+      - name: Host tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends zstd binutils perl
+
+      - name: Build payload
+        env:
+          UBUNTU_VERSION: ${{ inputs.ubuntu_version || '24.04.5' }}
+          DSH_VERSION: ${{ inputs.dsh_version || '0.2.2-rc.3' }}
+          OUT_DIR: ${{ github.workspace }}/app/src/main/assets
+        run: bash scripts/build-rootfs.sh
+
+      - name: Smoke-test payload
+        run: bash scripts/smoke-rootfs.sh
+
+      - name: Upload payload
+        uses: actions/upload-artifact@v4
+        with:
+          name: dsh-runtime-arm64
+          path: |
+            app/src/main/assets/rootfs.tar.gz
+            app/src/main/assets/proot.tar.gz
+            app/src/main/assets/runtime-manifest.json
+          if-no-files-found: error
+          retention-days: 14
+
+  apk:
+    needs: payload
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download payload
+        uses: actions/download-artifact@v4
+        with:
+          name: dsh-runtime-arm64
+          path: app/src/main/assets
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Assemble debug APK
+        run: ./gradlew :app:assembleDebug --no-daemon
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: dsh-android-debug
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 14
