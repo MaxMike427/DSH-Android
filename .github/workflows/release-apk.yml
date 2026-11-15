@@ -1,0 +1,96 @@
+name: release-apk
+
+# Publishes the debug-signed APK as a GitHub Release asset. Sideloading is the
+# only distribution path because targetSdk 28 is ineligible for Play.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag
+        required: true
+        default: "v0.1.0"
+      notes:
+        description: Release description
+        required: false
+        default: "Offline DeepSeekRuntime for Android (arm64)"
+  workflow_run:
+    workflows: [build-runtime]
+    types: [completed]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve run id
+        id: run
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT: ${{ github.event_name }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          REPO: ${{ github.repository }}
+        run: |
+          if [ "$EVENT" = "workflow_run" ]; then
+            echo "id=$RUN_ID" >> "$GITHUB_OUTPUT"
+            echo "apk=dsh-android-debug" >> "$GITHUB_OUTPUT"
+            echo "payload=dsh-runtime-arm64" >> "$GITHUB_OUTPUT"
+          else
+            latest="$(gh run list --repo "$REPO" --workflow build-runtime --status success --limit 1 --json databaseId --jq '.[0].databaseId')"
+            echo "id=$latest" >> "$GITHUB_OUTPUT"
+            echo "apk=dsh-android-debug" >> "$GITHUB_OUTPUT"
+            echo "payload=dsh-runtime-arm64" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download APK
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh run download "${{ steps.run.outputs.id }}" --repo "$REPO" \
+            -n "${{ steps.run.outputs.apk }}" -D out
+
+      - name: Locate APK
+        id: apk
+        run: |
+          file="$(find out -name '*.apk' -print -quit)"
+          [ -n "$file" ] || { echo "no apk in artifact" >&2; exit 1; }
+          cp "$file" dsh-android-arm64.apk
+          echo "path=dsh-android-arm64.apk" >> "$GITHUB_OUTPUT"
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag || 'v0.1.0' }}
+          NOTES: ${{ inputs.notes || 'Offline DeepSeekRuntime for Android (arm64)' }}
+          RUN_ID: ${{ steps.run.outputs.id }}
+        run: |
+          {
+            echo "$NOTES"
+            echo
+            echo "Built from workflow run $RUN_ID."
+            echo
+            echo "## Install"
+            echo '```sh'
+            echo 'adb install -r dsh-android-arm64.apk'
+            echo '```'
+            echo
+            echo "- Package: \`com.dshapp\`"
+            echo "- Architecture: arm64-v8a"
+            echo "- Android: 8.0 (API 26) and newer; targetSdk 28 is required so PRoot can exec from app storage"
+            echo "- First launch extracts the bundled Ubuntu 24.04 ARM64 rootfs (progress is shown in-app)"
+            echo "- The Web UI opens automatically at \`127.0.0.1:3080\`"
+          } > notes.md
+          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            gh release upload "$TAG" dsh-android-arm64.apk --repo "$REPO" --clobber
+            gh release edit "$TAG" --repo "$REPO" --notes-file notes.md
+          else
+            gh release create "$TAG" dsh-android-arm64.apk --repo "$REPO" \
+              --title "DSH Android $TAG" --notes-file notes.md
+          fi
