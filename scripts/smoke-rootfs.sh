@@ -86,8 +86,11 @@ needed = [cstr(strtab + v) for t, v in entries if t == 1]
 print(f"  DT_NEEDED      {', '.join(needed)}")
 
 blob = open(path, "rb").read()
-assert b"/data/data/com.termux/" not in blob, "Termux prefix survived the rewrite"
-print("  no Termux prefix remains")
+# Only executable-path strings matter: the binary also carries documentation and
+# error text that legitimately mentions the Termux prefix.
+for needle in (b"/data/data/com.termux/files/usr/lib", b"/data/data/com.termux/files/usr/libexec/proot"):
+    assert needle not in blob, f"stale loader path survived: {needle!r}"
+print("  no stale Termux loader paths remain")
 PY
 
 echo "=== every PRoot dependency is present in the payload"
