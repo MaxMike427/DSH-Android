@@ -1,6 +1,8 @@
 package com.dsh.android.ui
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -33,6 +35,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -49,14 +52,19 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.viewinterop.AndroidView
 import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.view.KeyEvent
 import com.dsh.android.runtime.LogLine
 import com.dsh.android.runtime.RuntimeState
 import com.dsh.android.storage.StorageAccessCard
+
+/** Which overlay the volume keys opened, if any. */
+private enum class Overlay { NONE, CONTROLS, LOGS, TERMINAL }
 
 private val DarkColors = darkColorScheme(
     primary = Color(0xFF7AB7FF),
@@ -72,6 +80,7 @@ fun DshRoot(
     state: RuntimeState,
     logs: List<LogLine>,
     mountSummary: List<String>,
+    terminalOutput: List<String>,
     onInstall: () -> Unit,
     onStart: () -> Unit,
     onStop: () -> Unit,
@@ -85,7 +94,13 @@ fun DshRoot(
                 is RuntimeState.NotInstalled -> InstallScreen(state, onInstall, mountSummary, onMountsChanged)
                 is RuntimeState.Installing -> InstallScreen(state, onInstall, mountSummary, onMountsChanged)
                 is RuntimeState.Starting -> StartingScreen(state)
-                is RuntimeState.Running -> WebScreen(state, logs, onStop)
+                is RuntimeState.Running -> WebScreen(
+                    state = state,
+                    logs = logs,
+                    terminalOutput = terminalOutput,
+                    onStop = onStop,
+                    onExec = onExec,
+                )
                 is RuntimeState.Stopped -> InstallScreen(state, onStart, mountSummary, onMountsChanged)
                 is RuntimeState.Failed -> FailureScreen(state, logs, onStart, onOpenLogs)
             }
@@ -210,53 +225,205 @@ private fun LogList(logs: List<LogLine>, modifier: Modifier = Modifier) {
     }
 }
 
+/**
+ * Full-screen Web UI.
+ *
+ * No on-screen buttons by default: the UI is the product, and a floating button
+ * row overlaps the harness's own controls. Volume + opens a small panel with
+ * Logs / Terminal / Stop; volume - closes it. The keys are consumed so they do
+ * not also change media volume while the panel is in use.
+ */
 @Composable
-private fun WebScreen(state: RuntimeState.Running, logs: List<LogLine>, onStop: () -> Unit) {
-    var showLogs by rememberSaveable { mutableStateOf(false) }
-    var url by rememberSaveable { mutableStateOf(state.url) }
+private fun WebScreen(
+    state: RuntimeState.Running,
+    logs: List<LogLine>,
+    terminalOutput: List<String>,
+    onStop: () -> Unit,
+    onExec: (String) -> Unit,
+) {
+    var overlay by rememberSaveable { mutableStateOf(Overlay.NONE) }
+    val url = state.url
+
+    // Volume keys are delivered to the Activity, so intercept there and drive
+    // this state through a holder rather than fighting the WebView's focus.
+    VolumeKeyOverlay(
+        onVolumeUp = {
+            overlay = if (overlay == Overlay.NONE) Overlay.CONTROLS else Overlay.NONE
+        },
+        onVolumeDown = { overlay = Overlay.NONE },
+    )
 
     Box(Modifier.fillMaxSize()) {
         DshWebView(url = url, modifier = Modifier.fillMaxSize())
 
-        AnimatedVisibility(visible = showLogs) {
-            Box(
+        AnimatedVisibility(
+            visible = overlay != Overlay.NONE,
+            enter = slideInVertically { it },
+            exit = slideOutVertically { it },
+        ) {
+            Column(
                 Modifier
                     .fillMaxSize()
-                    .background(Color(0xEE0B0F14))
+                    .background(Color(0xF20B0F14))
                     .statusBarsPadding()
-                    .navigationBarsPadding()
-                    .padding(16.dp),
+                    .navigationBarsPadding(),
             ) {
-                Column {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text("Runtime log", fontWeight = FontWeight.SemiBold)
-                        TextButton(onClick = { showLogs = false }) { Text("Close") }
-                    }
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 10.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        when (overlay) {
+                            Overlay.TERMINAL -> "Terminal"
+                            Overlay.LOGS -> "Runtime log"
+                            else -> "Runtime"
+                        },
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    TextButton(onClick = { overlay = Overlay.NONE }) { Text("Close") }
+                }
+
+                if (overlay == Overlay.CONTROLS) {
+                    ControlsPanel(
+                        onLogs = { overlay = Overlay.LOGS },
+                        onTerminal = { overlay = Overlay.TERMINAL },
+                        onStop = onStop,
+                    )
+                }
+
+                if (overlay == Overlay.LOGS) {
                     LogList(logs, modifier = Modifier.weight(1f))
                 }
+
+                if (overlay == Overlay.TERMINAL) {
+                    TerminalPanel(
+                        output = terminalOutput,
+                        onExec = onExec,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ControlsPanel(onLogs: () -> Unit, onTerminal: () -> Unit, onStop: () -> Unit) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Button(onClick = onTerminal, modifier = Modifier.fillMaxWidth()) { Text("Open terminal") }
+        Button(onClick = onLogs, modifier = Modifier.fillMaxWidth()) { Text("Show logs") }
+        TextButton(onClick = onStop, modifier = Modifier.fillMaxWidth()) { Text("Stop runtime") }
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "Volume+ toggles this panel, Volume- closes it.",
+            fontSize = 11.sp,
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f),
+        )
+    }
+}
+
+/**
+ * Terminal into the Ubuntu guest.
+ *
+ * Each line runs as its own bash invocation (no persistent shell state), which
+ * matches how the harness executes commands and keeps a hung command from
+ * wedging the session.
+ */
+@Composable
+private fun TerminalPanel(
+    output: List<String>,
+    onExec: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    var command by rememberSaveable { mutableStateOf("") }
+    val listState = rememberLazyListState()
+
+    LaunchedEffect(output.size) {
+        if (output.isNotEmpty()) listState.animateScrollToItem(output.size - 1)
+    }
+
+    Column(modifier.fillMaxWidth()) {
+        LazyColumn(
+            state = listState,
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp),
+        ) {
+            items(output) { line ->
+                Text(
+                    text = line,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 12.sp,
+                    color = Color(0xFFE6EDF3).copy(alpha = 0.9f),
+                )
             }
         }
 
         Row(
             modifier = Modifier
-                .align(Alignment.BottomEnd)
-                .navigationBarsPadding()
+                .fillMaxWidth()
                 .padding(12.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            TextButton(
-                onClick = { showLogs = !showLogs },
-                modifier = Modifier.background(Color(0xCC121821), RoundedCornerShape(20.dp)),
-            ) { Text("Logs") }
-            TextButton(
-                onClick = onStop,
-                modifier = Modifier.background(Color(0xCC121821), RoundedCornerShape(20.dp)),
-            ) { Text("Stop") }
+            OutlinedTextField(
+                value = command,
+                onValueChange = { command = it },
+                modifier = Modifier
+                    .weight(1f)
+                    .imePadding(),
+                placeholder = { Text("command", fontSize = 12.sp) },
+                singleLine = true,
+                textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                keyboardActions = KeyboardActions(onSend = {
+                    if (command.isNotBlank()) {
+                        onExec(command)
+                        command = ""
+                    }
+                }),
+            )
+            Spacer(Modifier.padding(horizontal = 4.dp))
+            Button(
+                onClick = {
+                    if (command.isNotBlank()) {
+                        onExec(command)
+                        command = ""
+                    }
+                },
+            ) { Text("Run") }
         }
+    }
+}
+
+/** Bridge Activity-level key events into Compose state. */
+@Composable
+private fun VolumeKeyOverlay(onVolumeUp: () -> Unit, onVolumeDown: () -> Unit) {
+    val view = LocalView.current
+    val context = androidx.compose.ui.platform.LocalContext.current
+    DisposableEffect(view, onVolumeUp, onVolumeDown) {
+        val activity = context.findActivity()
+        val owner = activity as? VolumeKeyHost
+        owner?.onVolumeKey = { code ->
+            when (code) {
+                KeyEvent.KEYCODE_VOLUME_UP -> {
+                    onVolumeUp(); true
+                }
+                KeyEvent.KEYCODE_VOLUME_DOWN -> {
+                    onVolumeDown(); true
+                }
+                else -> false
+            }
+        }
+        onDispose { owner?.onVolumeKey = null }
     }
 }
 

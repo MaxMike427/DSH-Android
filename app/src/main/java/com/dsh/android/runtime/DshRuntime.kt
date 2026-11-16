@@ -158,6 +158,7 @@ class DshRuntime(
             }
 
             paths.installMarker.writeText(stamp)
+            applyMirror()
             log(LogLine.LogStream.SYSTEM, "install: complete")
 
             _state.value = RuntimeState.Stopped(null)
@@ -239,9 +240,22 @@ class DshRuntime(
     }
 
     /** Run a one-shot command inside the guest and stream its output. */
+    /**
+     * Run one command inside the guest and stream its output.
+     *
+     * The wrapper sources nvm first so `node`, `npm`, `pnpm` and `dsh` resolve
+     * from the terminal; a plain `bash -lc` would only have the system PATH.
+     */
     fun exec(command: String): Flow<LogLine> = callbackFlow {
+        val wrapped = """
+            export NVM_DIR=/root/.nvm
+            [ -s "${'$'}NVM_DIR/nvm.sh" ] && . "${'$'}NVM_DIR/nvm.sh"
+            cd /root
+            $command
+        """.trimIndent()
+
         val process = runCatching {
-            ProcessBuilder(prootCommand(listOf("/bin/bash", "-lc", command)))
+            ProcessBuilder(prootCommand(listOf("/bin/bash", "-lc", wrapped)))
                 .apply { environment().putAll(this@DshRuntime.environment()) }
                 .redirectErrorStream(true)
                 .start()
@@ -336,6 +350,37 @@ class DshRuntime(
             paths.resolvConf.writeText("nameserver 1.1.1.1\nnameserver 8.8.8.8\n")
             paths.hostsFile.writeText("127.0.0.1 localhost\n::1 localhost\n")
         }
+    }
+
+    /** Tsinghua TUNA mirror; Ubuntu Base ships ports.ubuntu.com, which is slow here. */
+    private val mirrorSources = """
+        # Tsinghua University mirror (TUNA) - arm64/ports
+        deb https://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports/ noble main restricted universe multiverse
+        deb https://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports/ noble-updates main restricted universe multiverse
+        deb https://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports/ noble-backports main restricted universe multiverse
+        deb https://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports/ noble-security main restricted universe multiverse
+    """.trimIndent() + "\n"
+
+    /**
+     * Rewrite the guest's apt sources to the Tsinghua mirror.
+     *
+     * Done after extraction so `apt-get update` inside the guest works without
+     * the user editing sources by hand.
+     */
+    private fun applyMirror(): Boolean = runCatching {
+        val sources = File(paths.rootfs, "etc/apt/sources.list")
+        sources.parentFile?.mkdirs()
+        sources.writeText(mirrorSources)
+        // noble also reads deb822 `.sources` fragments; a leftover ubuntu.sources
+        // would keep pointing at the default mirror.
+        File(paths.rootfs, "etc/apt/sources.list.d").listFiles()
+            ?.filter { it.extension == "sources" || it.extension == "list" }
+            ?.forEach { it.delete() }
+        log(LogLine.LogStream.SYSTEM, "install: apt mirror set to tuna")
+        true
+    }.getOrElse {
+        log(LogLine.LogStream.SYSTEM, "install: could not set apt mirror: ${it.message}")
+        false
     }
 
     /**

@@ -75,9 +75,11 @@ class DshViewModel(
 
     fun exec(command: String) {
         viewModelScope.launch {
-            _terminalOutput.value = _terminalOutput.value + "\$ $command"
+            // Echo the command, then stream the guest's merged output. Each line
+            // is a fresh bash invocation, matching how the harness runs commands.
+            _terminalOutput.value = (_terminalOutput.value + "\$ $command").takeLast(MAX_TERMINAL_LINES)
             runtime.exec(command).collect { line ->
-                _terminalOutput.value = (_terminalOutput.value + line.text).takeLast(500)
+                _terminalOutput.value = (_terminalOutput.value + line.text).takeLast(MAX_TERMINAL_LINES)
             }
         }
     }
@@ -87,6 +89,8 @@ class DshViewModel(
     }
 
     companion object {
+        private const val MAX_TERMINAL_LINES = 500
+
         fun factory(app: DshApplication): ViewModelProvider.Factory = object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST")
             override fun <T : ViewModel> create(modelClass: Class<T>): T {
