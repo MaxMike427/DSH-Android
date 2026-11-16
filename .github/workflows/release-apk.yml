@@ -67,7 +67,10 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
-          TAG: ${{ inputs.tag || format('v0.1.{0}', steps.run.outputs.id) }}
+          # A dispatch without an explicit tag gets a short build id, not a fake
+          # semantic version: "v0.1.43860645039" reads like a version but is not.
+          TAG: ${{ inputs.tag || format('build-{0}', steps.run.outputs.id) }}
+          TITLE: ${{ inputs.tag && format('DSH Android {0}', inputs.tag) || format('DSH Android build {0}', steps.run.outputs.id) }}
           NOTES: ${{ inputs.notes || 'Offline DeepSeekRuntime for Android (arm64)' }}
           RUN_ID: ${{ steps.run.outputs.id }}
         run: |
@@ -87,13 +90,11 @@ jobs:
             echo "- First launch extracts the bundled Ubuntu 24.04 ARM64 rootfs (progress is shown in-app)"
             echo "- The Web UI opens automatically at \`127.0.0.1:3080\`"
           } > notes.md
-          # Tag with the build number by default so two builds never overwrite the
-          # same release and an APK can always be traced to its run.
           if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
             gh release upload "$TAG" dsh-android-arm64.apk --repo "$REPO" --clobber
-            gh release edit "$TAG" --repo "$REPO" --notes-file notes.md
+            gh release edit "$TAG" --repo "$REPO" --notes-file notes.md --title "$TITLE"
           else
             gh release create "$TAG" dsh-android-arm64.apk --repo "$REPO" \
-              --title "DSH Android build $RUN_ID" --notes-file notes.md
+              --title "$TITLE" --notes-file notes.md
           fi
           echo "published $TAG"

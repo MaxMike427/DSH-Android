@@ -76,7 +76,8 @@ class DshRuntime(
         paths.ensureDirectories()
         _state.value = when {
             !paths.isInstalled() -> RuntimeState.NotInstalled
-            serverProcess?.isAlive == true -> RuntimeState.Running(localUrl, processId(serverProcess))
+            serverProcess?.isAlive == true ->
+                RuntimeState.Running(readTokenUrl() ?: localUrl, processId(serverProcess))
             else -> RuntimeState.Stopped(null)
         }
     }
@@ -195,8 +196,12 @@ class DshRuntime(
 
             val ready = waitForHttp(process, timeoutSeconds = 180)
             if (ready) {
-                _state.value = RuntimeState.Running(localUrl, processId(process))
-                log(LogLine.LogStream.SYSTEM, "dsh web ready at $localUrl (pid ${processId(process)})")
+                // `dsh web` prints a tokenized URL and refuses requests without
+                // it. Loading the bare host would show "authentication required",
+                // so the URL from its own log is what the WebView must open.
+                val url = readTokenUrl() ?: localUrl
+                _state.value = RuntimeState.Running(url, processId(process))
+                log(LogLine.LogStream.SYSTEM, "dsh web ready at $url (pid ${processId(process)})")
                 monitor(process)
             } else {
                 val tail = tailLog()
@@ -331,6 +336,23 @@ class DshRuntime(
             paths.resolvConf.writeText("nameserver 1.1.1.1\nnameserver 8.8.8.8\n")
             paths.hostsFile.writeText("127.0.0.1 localhost\n::1 localhost\n")
         }
+    }
+
+    /**
+     * Read the tokenized URL `dsh web` prints on startup.
+     *
+     * The server rejects unauthenticated requests, so this exact URL (token
+     * included) is the only way into the UI. Polls briefly because the line is
+     * flushed just before the port starts accepting.
+     */
+    private fun readTokenUrl(): String? {
+        val pattern = Regex("""http://127\.0\.0\.1:$port/\?token=[A-Za-z0-9_\-]+""")
+        repeat(30) {
+            val text = runCatching { paths.serverLog.readText() }.getOrDefault("")
+            pattern.find(text)?.let { return it.value }
+            Thread.sleep(200)
+        }
+        return pattern.find(runCatching { paths.serverLog.readText() }.getOrDefault(""))?.value
     }
 
     private fun waitForHttp(process: Process, timeoutSeconds: Int): Boolean {
