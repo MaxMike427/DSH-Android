@@ -39,6 +39,16 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends zstd xz-utils binutils perl
 
+      - name: Reject CRLF line endings in shell scripts
+        # A stray \r makes bash fail with "command not found" on a line that
+        # looks correct, which is how a payload build once died at the very end.
+        run: |
+          if grep -rlI $'\r' scripts/ 2>/dev/null; then
+            echo "CRLF line endings found in scripts/" >&2
+            exit 1
+          fi
+          echo "line endings ok"
+
       - name: Build payload
         env:
           UBUNTU_VERSION: ${{ inputs.ubuntu_version || '24.04.5' }}
