@@ -9,11 +9,18 @@
 # mechanism. The provider is fail-closed, so every bash call would fail with
 # SANDBOX_UNAVAILABLE instead of running.
 #
-# This layer swaps the *executor* only:
-#   - `bash-sandbox` is disabled by id and `bash-local` is inserted in its place;
-#   - `sandbox` / `sandbox-policy` stay mounted, so `fs-sandbox` keeps fencing
-#     file writes through ctx.fs;
-#   - `approval` and `permission` still gate tool calls.
+# This layer swaps the executor for the unconfined local one and drops the
+# plugins that only make sense over a confining executor:
+#
+#   - `bash-sandbox` is disabled, `bash-local` is inserted in its place;
+#   - `permission` is disabled: PermissionPresetService refuses to mount when the
+#     bash executor does not confine ("the mounted bash executor does not
+#     confine (no sandboxMode)"), because a preset bundles a sandbox mode and
+#     would silently promise confinement that cannot be enforced;
+#   - `approval` stays: it still asks before tool calls, which is the remaining
+#     safety boundary;
+#   - `sandbox` / `sandbox-policy` stay mounted so `fs-sandbox` keeps fencing
+#     file writes through ctx.fs.
 #
 # Patch syntax notes (see apps/cli/reference/README.md):
 #   - a bare `- id:` row *modifies* an existing entry and fails if the id is
@@ -21,6 +28,9 @@
 #   - new rows must be wrapped in `insert:`.
 
 - id: bash-sandbox
+  disabled: true
+
+- id: permission
   disabled: true
 
 - insert:

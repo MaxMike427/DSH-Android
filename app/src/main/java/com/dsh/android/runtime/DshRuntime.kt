@@ -105,9 +105,12 @@ class DshRuntime(
 
             // PRoot first: it is small, and a failed rootfs extract must not leave
             // a marker that claims a usable install.
+            //
+            // The payload is archived from the files/ root (it contains usr/...),
+            // so it extracts into `files`, not into `files/usr`.
             _state.value = RuntimeState.Installing("Extracting PRoot", 0.01f)
             assets.open("proot.tar.xz").use { input ->
-                TarExtractor.extractXz(input, paths.prefix) { done ->
+                TarExtractor.extractXz(input, paths.files) { done ->
                     val fraction = 0.01f + (done.toFloat() / totalBytes) * 0.09f
                     onProgress(fraction.coerceIn(0.01f, 0.10f), "Extracting PRoot")
                 }
@@ -274,10 +277,16 @@ class DshRuntime(
             "-b", "/dev",
             "-b", "/proc",
             "-b", "/sys",
-            "-b", "${paths.home.absolutePath}:/root",
             "-b", "${paths.tmp.absolutePath}:/tmp",
             "-w", "/root",
         )
+
+        // Only override the guest home when it actually holds user data. The
+        // toolchain (nvm, node, dsh) lives in the rootfs at /root, so mounting an
+        // empty directory over it would hide every installed tool.
+        if (paths.home.isDirectory && (paths.home.list()?.isNotEmpty() == true)) {
+            cmd += listOf("-b", "${paths.home.absolutePath}:/root")
+        }
         if (paths.resolvConf.isFile) cmd += listOf("-b", "${paths.resolvConf.absolutePath}:/etc/resolv.conf")
         if (paths.hostsFile.isFile) cmd += listOf("-b", "${paths.hostsFile.absolutePath}:/etc/hosts")
 
