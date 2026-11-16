@@ -139,6 +139,21 @@ sudo chmod 0644 "$ROOTFS/opt/dsh/cordis.patch.yml"
 cleanup_mounts
 trap - EXIT
 
+# Point apt at the Tsinghua mirror at build time as well: the app rewrites this
+# after extraction, but the image should already be correct so `apt-get update`
+# works even for a rootfs unpacked outside the app.
+log "configure apt mirror"
+sudo tee "$ROOTFS/etc/apt/sources.list" >/dev/null <<'SOURCES'
+# Tsinghua University mirror (TUNA) - arm64/ports
+deb https://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports/ noble main restricted universe multiverse
+deb https://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports/ noble-updates main restricted universe multiverse
+deb https://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports/ noble-backports main restricted universe multiverse
+deb https://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports/ noble-security main restricted universe multiverse
+SOURCES
+# Ubuntu Base ships a deb822 fragment that would keep pointing at the default
+# archive and override the list above.
+sudo rm -f "$ROOTFS"/etc/apt/sources.list.d/*.sources "$ROOTFS"/etc/apt/sources.list.d/*.list
+
 log "trim rootfs"
 # Size matters: the rootfs ships inside the APK. Everything removed here is
 # either documentation, another arch's data, or a build-time artifact the
@@ -147,9 +162,12 @@ sudo chroot "$ROOTFS" /usr/bin/env -i \
   PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
   bash -lc 'set -e
     # Docs, man pages, locales, package caches.
+    # NOTE: /usr/lib/apt must stay. It holds the http/https method drivers, and
+    # deleting it makes every `apt-get update` fail with "The method driver
+    # /usr/lib/apt/methods/http could not be found".
     rm -rf /usr/share/doc/* /usr/share/man/* /usr/share/info/* /usr/share/locale/* \
            /usr/share/zoneinfo/right /usr/share/i18n /var/cache/* /tmp/* \
-           /usr/lib/apt /var/lib/apt/lists /root/.npm /root/.cache
+           /var/lib/apt/lists /root/.npm /root/.cache
     # Git is the largest single package; keep the binary and drop its extras.
     rm -rf /usr/share/git-core/templates/hooks /usr/share/git-core/contrib \
            /usr/lib/git-core/*.so 2>/dev/null || true
