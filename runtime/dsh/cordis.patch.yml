@@ -26,24 +26,28 @@
 # Patch syntax (see apps/cli/reference/README.md): a bare `- id:` row modifies an
 # existing entry and fails when the id is absent; new rows go under `insert:`.
 
+# `bash-sandbox` is the shipped executor. It is disabled because its Linux rungs
+# need bwrap or Landlock, neither of which exists under PRoot, and the provider is
+# fail-closed (every command would die with SANDBOX_UNAVAILABLE).
+#
+# There is no `bash-local` row in the base bundle to disable — the shim below is
+# the only local executor, inserted as `bash` (the service it provides).
 - id: bash-sandbox
   disabled: true
 
-- id: bash-local
-  disabled: true
-
-# Directory picking: `-auto` probes the host at boot and falls back to `browse`
-# when it cannot prove a native chooser is reachable. On Android that probe has
-# no display and no zenity/kdialog, so `browse` is pinned and gives the Web UI a
-# working "Choose workspace" dialog.
-- id: directory-picker
-  name: '@deepseek-ai/dsh-host-directory-picker-browse'
+# Directory picking: the shipped `-auto` row probes the host at boot and falls back
+# to `browse` when it cannot prove a native chooser is reachable. On Android that
+# probe finds no display and no zenity/kdialog, so `auto` already resolves to
+# `browse` — the row is left untouched. A patch row that changes `name` is rejected
+# as a mismatch ("name mismatch for directory-picker ... skipping"), so it must not
+# be restated here.
 
 - insert:
-    # The single `ctx.shell` provider. Replaces the disabled row above, and keeps
-    # the same budget knobs `bash-local` ships with.
+    # The single `ctx.shell` provider: a subclass of dsh-bash-local that also
+    # reports a sandbox mode, which is what lets dsh-permission-presets construct.
     - id: bash
       name: './profile-shim.js'
       config:
         timeoutMs: 60000
         maxTimeoutMs: 600000
+

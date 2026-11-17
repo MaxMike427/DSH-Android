@@ -138,9 +138,12 @@ guest /bin/bash -lc 'set -e
   git log --oneline
 '
 
-echo "=== PRoot profile patch is installed in the web profile"
+echo "=== PRoot profile layer is installed in the web profile"
 test -f "$ROOTFS/root/.dsh/profiles/web/cordis.patch.yml"
-grep -q "bash-local" "$ROOTFS/root/.dsh/profiles/web/cordis.patch.yml"
+test -f "$ROOTFS/root/.dsh/profiles/web/profile-shim.js"
+grep -q "profile-shim.js" "$ROOTFS/root/.dsh/profiles/web/cordis.patch.yml"
+# The shim is an ES module; the profile manifest must say so.
+grep -q '"type": "module"' "$ROOTFS/root/.dsh/profiles/web/package.json"
 echo "  ok"
 
 echo "=== dsh web boot (profile layer carries the PRoot composition)"
@@ -169,23 +172,47 @@ guest /bin/bash -lc 'set -e
   exit 1
 '
 
-echo "=== bash tool actually executes inside the guest"
-# The decisive check: the composed tree must use the local bash executor. PRoot
-# cannot satisfy dsh-sandbox-local, and that provider fails closed, so a missing
-# profile patch means every bash call dies with SANDBOX_UNAVAILABLE.
+echo "=== the PRoot composition replaced the sandboxed executor"
+# PRoot cannot satisfy dsh-sandbox-local (no bwrap/Landlock) and that provider is
+# fail-closed, so the profile layer must replace the executor. It does so with
+# `profile-shim.js`, a subclass of dsh-bash-local that additionally reports a
+# sandbox mode; without that report, dsh-permission-presets refuses to construct
+# and the Web UI loses /api/permissionPresets/catalog (a 404 that stops the main
+# surface from rendering).
 guest /bin/bash -lc 'set -e
   . /root/.nvm/nvm.sh
   cd /root
   dsh --profile web --dump-config >/tmp/composed.yml 2>/tmp/composed.err || true
-  echo "  --- composed bash rows ---"
-  grep -n -E "bash-(local|sandbox)|id: bash" /tmp/composed.yml || true
-  echo "  --- patch diagnostics ---"
+  echo "  --- composed bash row ---"
+  grep -n -A2 "^\- id: bash$" /tmp/composed.yml || true
+  echo "  --- patch diagnostics (informational) ---"
   cat /tmp/composed.err || true
-  if ! grep -q "dsh-bash-local" /tmp/composed.yml; then
-    echo "  FAIL: the PRoot profile patch did not compose dsh-bash-local" >&2
+
+  # `bash` must point at the shim, and the sandboxed executor must be gone.
+  if ! grep -q "profile-shim.js" /tmp/composed.yml; then
+    echo "  FAIL: the shim did not compose into the bash row" >&2
     exit 1
   fi
-  echo "  ok: local bash executor composed"
+  if grep -q "dsh-bash-sandbox" /tmp/composed.yml; then
+    echo "  FAIL: the sandboxed executor is still composed" >&2
+    exit 1
+  fi
+  echo "  ok: bash runs through the PRoot shim"
+'
+
+echo "=== a real command executes through the composed executor"
+# The composition check above is static; this proves a command actually runs, so
+# a shim that loads but cannot spawn is caught here rather than on a device.
+guest /bin/bash -lc 'set -e
+  . /root/.nvm/nvm.sh
+  cd /root
+  out=$(dsh --profile headless "echo pr-shim-ok" 2>&1 || true)
+  printf "%s\n" "$out" | tail -5
+  if printf "%s" "$out" | grep -q "SANDBOX_UNAVAILABLE"; then
+    echo "  FAIL: the sandbox provider rejected the command" >&2
+    exit 1
+  fi
+  echo "  ok: headless run produced no sandbox failure"
 '
 
 echo "=== payload smoke test passed"
