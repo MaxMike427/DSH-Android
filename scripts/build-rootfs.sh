@@ -132,6 +132,21 @@ PROFILE_DIR="$ROOTFS/root/.dsh/profiles/web"
 sudo mkdir -p "$PROFILE_DIR"
 sudo cp "$REPO_ROOT/runtime/dsh/cordis.patch.yml" "$PROFILE_DIR/cordis.patch.yml"
 sudo chmod 0644 "$PROFILE_DIR/cordis.patch.yml"
+# The profile layer loads this local module, so it has to travel with the patch.
+sudo cp "$REPO_ROOT/runtime/dsh/profile-shim.js" "$PROFILE_DIR/profile-shim.js"
+sudo chmod 0644 "$PROFILE_DIR/profile-shim.js"
+# Mark the profile as ESM: without it Node re-parses the shim as CommonJS first
+# and prints a MODULE_TYPELESS_PACKAGE_JSON warning on every boot.
+sudo python3 - "$PROFILE_DIR/package.json" <<'PY'
+import json, sys
+path = sys.argv[1]
+with open(path, encoding="utf-8") as handle:
+    manifest = json.load(handle)
+manifest["type"] = "module"
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(manifest, handle, indent=2)
+    handle.write("\n")
+PY
 sudo mkdir -p "$ROOTFS/opt/dsh"
 sudo cp "$REPO_ROOT/runtime/dsh/cordis.patch.yml" "$ROOTFS/opt/dsh/cordis.patch.yml"
 sudo chmod 0644 "$ROOTFS/opt/dsh/cordis.patch.yml"

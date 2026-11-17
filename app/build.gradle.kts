@@ -13,16 +13,19 @@ android {
         // Android 10+ blocks exec() of app-private files for targetSdk >= 29.
         // PRoot must execute binaries from app storage, so the target stays at 28.
         targetSdk = 28
-        // Version comes from the build so an installed APK is traceable to the
-        // commit that produced it. CI supplies DSH_VERSION_NAME / DSH_BUILD_ID.
+        // Standard semantic version: 0.1.<build number>. A commit hash was
+        // unreadable on the device and is not a version.
         val buildId = (System.getenv("DSH_BUILD_ID") ?: "0").toLongOrNull() ?: 0L
-        val shortSha = (System.getenv("DSH_VERSION_NAME") ?: "dev")
-        // versionCode must be a positive 32-bit int and must increase per build.
+        val patch = when {
+            buildId > 0 -> (buildId % 1000).toInt()
+            else -> (System.currentTimeMillis() / 60_000L % 1000).toInt()
+        }
+        versionName = "0.1.$patch"
+        // versionCode must be a positive 32-bit int and increase per build.
         versionCode = when {
             buildId in 1..2_000_000_000L -> buildId.toInt()
             else -> (System.currentTimeMillis() / 60_000L).rem(2_000_000_000L).toInt()
         }
-        versionName = shortSha
 
         ndk {
             abiFilters += listOf("arm64-v8a")

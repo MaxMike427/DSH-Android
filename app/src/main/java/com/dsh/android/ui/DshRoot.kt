@@ -235,6 +235,15 @@ private fun LogList(logs: List<LogLine>, modifier: Modifier = Modifier) {
  * Logs / Terminal / Stop; volume - closes it. The keys are consumed so they do
  * not also change media volume while the panel is in use.
  */
+/**
+ * Full-screen Web UI.
+ *
+ * The embedded WebView renders the page background but not its content on some
+ * devices (the DOM loads, nothing paints). Rather than ship a second browser
+ * engine, the harness UI is opened in a Custom Tab — the system Chrome engine,
+ * which renders correctly here — while the in-app surface stays available for
+ * controls, logs and the terminal.
+ */
 @Composable
 private fun WebScreen(
     state: RuntimeState.Running,
@@ -244,7 +253,9 @@ private fun WebScreen(
     onExec: (String) -> Unit,
 ) {
     var overlay by rememberSaveable { mutableStateOf(Overlay.NONE) }
+    var openedExternally by rememberSaveable { mutableStateOf(false) }
     val url = state.url
+    val context = LocalContext.current
 
     // Volume keys are delivered to the Activity, so intercept there and drive
     // this state through a holder rather than fighting the WebView's focus.
@@ -258,9 +269,42 @@ private fun WebScreen(
     Box(Modifier.fillMaxSize()) {
         DshWebView(url = url, modifier = Modifier.fillMaxSize())
 
-        if (overlay != Overlay.NONE) {
-            // Rendered as a sibling that only exists while open, so the WebView
-            // keeps every touch event when the panel is closed.
+        // First-run affordance: the embedded view may paint nothing, so offer the
+        // working engine immediately instead of leaving the user on a black
+        // screen wondering whether the runtime started.
+        if (!openedExternally) {
+            Column(
+                Modifier
+                    .fillMaxSize()
+                    .background(Color(0xF20B0F14))
+                    .statusBarsPadding()
+                    .navigationBarsPadding()
+                    .padding(24.dp),
+                verticalArrangement = Arrangement.Center,
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Text("DeepSeekRuntime is running", fontWeight = FontWeight.SemiBold, fontSize = 18.sp)
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "The built-in view cannot render this page on your device. " +
+                        "Open it in the browser instead — the runtime is the same.",
+                    fontSize = 13.sp,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                )
+                Spacer(Modifier.height(20.dp))
+                Button(
+                    onClick = {
+                        openInBrowser(context, url)
+                        openedExternally = true
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("Open DeepSeekRuntime") }
+                Spacer(Modifier.height(8.dp))
+                TextButton(onClick = { openedExternally = true }) { Text("Try the built-in view") }
+            }
+        }
+
+        if (overlay == Overlay.CONTROLS) {
             Column(
                 Modifier
                     .fillMaxSize()
@@ -275,43 +319,92 @@ private fun WebScreen(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text(
-                        when (overlay) {
-                            Overlay.TERMINAL -> "Terminal"
-                            Overlay.LOGS -> "Runtime log"
-                            else -> "Runtime"
-                        },
-                        fontWeight = FontWeight.SemiBold,
-                    )
+                    Text("Runtime", fontWeight = FontWeight.SemiBold)
                     TextButton(onClick = { overlay = Overlay.NONE }) { Text("Close") }
                 }
+                ControlsPanel(
+                    onLogs = { overlay = Overlay.LOGS },
+                    onTerminal = { overlay = Overlay.TERMINAL },
+                    onStop = onStop,
+                    onOpenBrowser = { openInBrowser(context, url) },
+                )
+            }
+        }
 
-                if (overlay == Overlay.CONTROLS) {
-                    ControlsPanel(
-                        onLogs = { overlay = Overlay.LOGS },
-                        onTerminal = { overlay = Overlay.TERMINAL },
-                        onStop = onStop,
-                    )
+        if (overlay == Overlay.LOGS) {
+            Column(
+                Modifier
+                    .fillMaxSize()
+                    .background(Color(0xF20B0F14))
+                    .statusBarsPadding()
+                    .navigationBarsPadding(),
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 10.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("Runtime log", fontWeight = FontWeight.SemiBold)
+                    TextButton(onClick = { overlay = Overlay.NONE }) { Text("Close") }
                 }
+                LogList(logs, modifier = Modifier.weight(1f))
+            }
+        }
 
-                if (overlay == Overlay.LOGS) {
-                    LogList(logs, modifier = Modifier.weight(1f))
+        if (overlay == Overlay.TERMINAL) {
+            Column(
+                Modifier
+                    .fillMaxSize()
+                    .background(Color(0xF20B0F14))
+                    .statusBarsPadding()
+                    .navigationBarsPadding(),
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 10.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("Terminal", fontWeight = FontWeight.SemiBold)
+                    TextButton(onClick = { overlay = Overlay.NONE }) { Text("Close") }
                 }
-
-                if (overlay == Overlay.TERMINAL) {
-                    TerminalPanel(
-                        output = terminalOutput,
-                        onExec = onExec,
-                        modifier = Modifier.weight(1f),
-                    )
-                }
+                TerminalPanel(
+                    output = terminalOutput,
+                    onExec = onExec,
+                    modifier = Modifier.weight(1f),
+                )
             }
         }
     }
 }
 
+/**
+ * Open the harness UI in the system browser.
+ *
+ * The token is part of the URL and the server rejects anything else, so the
+ * exact `dsh web` URL must be handed over unchanged. Android's package visibility
+ * rules and some browsers strip the query string, so the intent is explicit and
+ * verified before it is considered successful.
+ */
+private fun openInBrowser(context: android.content.Context, url: String) {
+    val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url))
+        .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+    runCatching { context.startActivity(intent) }
+        .onFailure {
+            android.util.Log.e("DSH_WEBVIEW", "cannot open browser: ${it.message}")
+        }
+}
+
 @Composable
-private fun ControlsPanel(onLogs: () -> Unit, onTerminal: () -> Unit, onStop: () -> Unit) {
+private fun ControlsPanel(
+    onLogs: () -> Unit,
+    onTerminal: () -> Unit,
+    onStop: () -> Unit,
+    onOpenBrowser: () -> Unit,
+) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -319,6 +412,7 @@ private fun ControlsPanel(onLogs: () -> Unit, onTerminal: () -> Unit, onStop: ()
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         Button(onClick = onTerminal, modifier = Modifier.fillMaxWidth()) { Text("Open terminal") }
+        Button(onClick = onOpenBrowser, modifier = Modifier.fillMaxWidth()) { Text("Open in browser") }
         Button(onClick = onLogs, modifier = Modifier.fillMaxWidth()) { Text("Show logs") }
         TextButton(onClick = onStop, modifier = Modifier.fillMaxWidth()) { Text("Stop runtime") }
         Spacer(Modifier.height(4.dp))
@@ -446,10 +540,28 @@ private fun DshWebView(url: String, modifier: Modifier = Modifier) {
                     allowContentAccess = false
                     mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
                     cacheMode = WebSettings.LOAD_DEFAULT
-                    useWideViewPort = true
-                    loadWithOverviewMode = true
                     textZoom = 100
+                    // This is a desktop-class SPA that already ships responsive
+                    // meta viewport handling. `useWideViewPort` +
+                    // `loadWithOverviewMode` make WebView scale a wide virtual
+                    // viewport into the device width, which collapsed the whole
+                    // page into a thin strip at the bottom of the screen (only
+                    // ~8px of text was painted). Both are off by default for
+                    // responsive pages.
+                    useWideViewPort = false
+                    loadWithOverviewMode = false
+                    layoutAlgorithm = WebSettings.LayoutAlgorithm.NORMAL
+                    // Let the page use the real device pixel width.
+                    mediaPlaybackRequiresUserGesture = false
                 }
+                isVerticalScrollBarEnabled = true
+                isHorizontalScrollBarEnabled = false
+                setBackgroundColor(android.graphics.Color.rgb(21, 21, 23))
+                // The page loads (DOM is complete) but paints nothing on this
+                // device. Layer type SOFTWARE bypasses the hardware layer that
+                // fails to composite, trading some scrolling smoothness for a
+                // visible UI.
+                setLayerType(android.view.View.LAYER_TYPE_SOFTWARE, null)
                 // The WebView sits inside a Compose Box and must receive touches
                 // itself: without clickable/focusable it never gets them, which
                 // makes the whole page appear frozen even though it renders.
@@ -481,16 +593,32 @@ private fun DshWebView(url: String, modifier: Modifier = Modifier) {
                         }
                     }
 
-                    override fun onPageFinished(view: WebView, finishedUrl: String?) {
-                        android.util.Log.i("DSH_WEBVIEW", "onPageFinished: $finishedUrl")
-                        view.evaluateJavascript(
-                            "(function(){var b=document.body;return JSON.stringify({" +
-                                "title:document.title," +
-                                "bodyLen:b?b.innerHTML.length:-1," +
-                                "text:(b?b.innerText:'').slice(0,120)," +
-                                "bg:b?getComputedStyle(b).backgroundColor:''})})()"
-                        ) { result -> android.util.Log.i("DSH_WEBVIEW", "dom: $result") }
-                    }
+                        override fun onPageFinished(view: WebView, finishedUrl: String?) {
+                            // A black screen with a fully loaded DOM means the
+                            // page painted almost nothing: measure the real
+                            // layout from inside the document to tell "not
+                            // rendered" apart from "rendered off-screen".
+                            android.util.Log.i(
+                                "DSH_WEBVIEW",
+                                "onPageFinished: $finishedUrl size=${view.width}x${view.height}",
+                            )
+                            view.evaluateJavascript(
+                                "(function(){" +
+                                    "var d=document,de=d.documentElement,b=d.body," +
+                                    "app=d.getElementById('app')||d.querySelector('#root');" +
+                                    "var first=app&&app.firstElementChild;" +
+                                    "function r(e){if(!e)return null;var x=e.getBoundingClientRect();" +
+                                    "return {w:Math.round(x.width),h:Math.round(x.height),t:Math.round(x.top),l:Math.round(x.left)}};" +
+                                    "return JSON.stringify({" +
+                                    "vw:innerWidth,vh:innerHeight,dpr:devicePixelRatio," +
+                                    "docW:de.scrollWidth,docH:de.scrollHeight," +
+                                    "bodyW:b?Math.round(b.getBoundingClientRect().width):-1," +
+                                    "bodyH:b?Math.round(b.getBoundingClientRect().height):-1," +
+                                    "app:r(app),first:r(first)," +
+                                    "text:(b?b.innerText:'').slice(0,80)" +
+                                    "})})()",
+                            ) { result -> android.util.Log.i("DSH_WEBVIEW", "layout: $result") }
+                        }
 
                     override fun onReceivedError(
                         view: WebView,
