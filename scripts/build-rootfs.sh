@@ -142,8 +142,18 @@ trap - EXIT
 # Point apt at the Tsinghua mirror at build time as well: the app rewrites this
 # after extraction, but the image should already be correct so `apt-get update`
 # works even for a rootfs unpacked outside the app.
-log "configure apt mirror"
-sudo tee "$ROOTFS/etc/apt/sources.list" >/dev/null <<'SOURCES'
+# Ubuntu Base points /etc/resolv.conf at systemd-resolved's 127.0.0.53 stub, which
+# does not exist inside PRoot (no systemd). Without a real resolver every
+# `apt-get update` fails with "Temporary failure resolving".
+log "configure resolver"
+sudo rm -f "$ROOTFS/etc/resolv.conf"
+sudo tee "$ROOTFS/etc/resolv.conf" >/dev/null <<'RESOLV'
+nameserver 223.5.5.5
+nameserver 119.29.29.29
+nameserver 1.1.1.1
+RESOLV
+
+log "configure apt mirror"sudo tee "$ROOTFS/etc/apt/sources.list" >/dev/null <<'SOURCES'
 # Tsinghua University mirror (TUNA) - arm64/ports
 deb https://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports/ noble main restricted universe multiverse
 deb https://mirrors.tuna.tsinghua.edu.cn/ubuntu-ports/ noble-updates main restricted universe multiverse

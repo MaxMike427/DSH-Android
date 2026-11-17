@@ -345,10 +345,23 @@ class DshRuntime(
     """.trimIndent()
 
     private fun writeNetworkConfig() {
-        // PRoot shares the host network; resolv.conf is bound so DNS works.
+        // PRoot shares the host network, but the guest has no systemd-resolved,
+        // so its own /etc/resolv.conf (pointing at 127.0.0.53) cannot resolve.
+        // Writing a real resolver into the rootfs is what makes DNS work; the
+        // bind mount is kept as a secondary path for the state directory.
         runCatching {
-            paths.resolvConf.writeText("nameserver 1.1.1.1\nnameserver 8.8.8.8\n")
+            paths.resolvConf.writeText(
+                """
+                nameserver 223.5.5.5
+                nameserver 119.29.29.29
+                nameserver 1.1.1.1
+                """.trimIndent() + "\n"
+            )
             paths.hostsFile.writeText("127.0.0.1 localhost\n::1 localhost\n")
+
+            val guestResolv = File(paths.rootfs, "etc/resolv.conf")
+            guestResolv.parentFile?.mkdirs()
+            guestResolv.writeText(paths.resolvConf.readText())
         }
     }
 

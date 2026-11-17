@@ -4,6 +4,8 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -265,6 +267,13 @@ private fun WebScreen(
                 Modifier
                     .fillMaxSize()
                     .background(Color(0xF20B0F14))
+                    // Consume taps so they never reach the WebView underneath;
+                    // without this the panel renders but its buttons do not
+                    // receive the touch.
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                    ) { }
                     .statusBarsPadding()
                     .navigationBarsPadding(),
             ) {
