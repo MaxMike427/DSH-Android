@@ -119,18 +119,19 @@ fun StorageAccessCard(
 }
 
 private fun requestAccess(context: Context, requestLegacy: () -> Unit) {
+    // Request the runtime permissions first: on devices where the legacy model
+    // still applies they are what grant the volume, and the dialog is immediate.
+    requestLegacy()
+
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-        // API 30+ cannot be granted at runtime; send the user to the app's
-        // all-files screen, falling back to the global list on vendor ROMs.
+        // The appop is what actually grants the external_storage group on
+        // Android 16 (verified on device), even with targetSdk 28. The per-app
+        // screen may not exist for a legacy-target app, so fall back to the
+        // global list.
         val direct = StorageAccess.allFilesAccessIntent(context)
-        if (context !is Activity) {
-            direct.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        }
-        val ok = runCatching { context.startActivity(direct) }.isSuccess
-        if (!ok) {
+        val opened = runCatching { context.startActivity(direct) }.isSuccess
+        if (!opened) {
             runCatching { context.startActivity(StorageAccess.allFilesAccessFallbackIntent()) }
         }
-    } else {
-        requestLegacy()
     }
 }

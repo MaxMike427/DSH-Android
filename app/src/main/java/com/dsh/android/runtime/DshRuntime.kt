@@ -315,8 +315,13 @@ class DshRuntime(
 
         // Android shared storage. Bind each existing directory individually so a
         // missing one (or a denied permission) never aborts the whole spawn.
+        //
+        // PRoot sanitizes each bind source with stat() before mounting. On the
+        // FUSE-backed shared volume that call can fail while real reads and
+        // writes still succeed, which prints "can't sanitize binding". The path
+        // is still listed so the guest gets the mount.
         StorageAccess.mountPoints(context).forEach { (name, dir) ->
-            if (dir.isDirectory) cmd += listOf("-b", "${dir.absolutePath}:${StorageAccess.guestPath(name)}")
+            cmd += listOf("-b", "${dir.absolutePath}:${StorageAccess.guestPath(name)}")
         }
 
         cmd += guestCommand

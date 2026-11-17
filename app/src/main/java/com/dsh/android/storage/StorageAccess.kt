@@ -36,17 +36,23 @@ object StorageAccess {
     /**
      * True when the app can read and write the shared storage root.
      *
-     * With targetSdk 28 the platform keeps the legacy model, so the runtime
-     * READ/WRITE_EXTERNAL_STORAGE grant is the real gate. `isExternalStorageManager`
-     * is only consulted on targetSdk >= 30, where that switch exists.
+     * Device testing on Android 16 showed the legacy READ/WRITE grant alone is
+     * not enough: the app process never receives the external_storage group, so
+     * every stat() on /storage/emulated/0 fails. The appop
+     * MANAGE_EXTERNAL_STORAGE does grant it, even with targetSdk 28, and that is
+     * what the runtime check below reflects.
      */
     fun hasBroadAccess(context: Context): Boolean {
-        if (hasLegacyPermission(context)) return true
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            Environment.isExternalStorageManager()
-        } else {
-            false
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && Environment.isExternalStorageManager()) {
+            return true
         }
+        // Fallback for older releases and for devices that honour the legacy grant.
+        return hasLegacyPermission(context) && externalStorageReadable()
+    }
+
+    private fun externalStorageReadable(): Boolean {
+        val root = Environment.getExternalStorageDirectory()
+        return root.isDirectory && root.canRead()
     }
 
     private fun hasLegacyPermission(context: Context): Boolean {
@@ -108,9 +114,21 @@ object StorageAccess {
             if (dir.isDirectory) result += "android-shared" to dir
         }
 
-        if (!hasBroadAccess(context)) return result
-
+        val broad = hasBroadAccess(context)
+        // Diagnosis for the common failure: the app is granted nothing, or the
+        // platform denies a path the permission model claims is allowed.
         val root = Environment.getExternalStorageDirectory()
+        android.util.Log.i(
+            "DSH_STORAGE",
+            "broadAccess=$broad sdk=${Build.VERSION.SDK_INT} " +
+                "read=${ContextCompat.checkSelfPermission(context, Manifest.permission.READ_EXTERNAL_STORAGE)} " +
+                "write=${ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_EXTERNAL_STORAGE)} " +
+                "manager=${if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) Environment.isExternalStorageManager() else false} " +
+                "root=${root.absolutePath} exists=${root.isDirectory} canRead=${root.canRead()} canWrite=${root.canWrite()}",
+        )
+
+        if (!broad) return result
+
         val named = listOf(
             "Download",
             "Documents",
@@ -124,7 +142,12 @@ object StorageAccess {
         )
         named.forEach { name ->
             val dir = File(root, name)
-            if (dir.isDirectory) result += name.lowercase() to dir
+            if (dir.isDirectory) {
+                result += name.lowercase() to dir
+                android.util.Log.i("DSH_STORAGE", "mount ${dir.absolutePath} readable=${dir.canRead()}")
+            } else {
+                android.util.Log.i("DSH_STORAGE", "skip ${dir.absolutePath} (not a directory)")
+            }
         }
 
         // The whole shared volume last, so the named mounts above take precedence
