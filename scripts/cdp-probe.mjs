@@ -1,15 +1,15 @@
 /**
- * Minimal Chrome DevTools Protocol driver: load a URL with mobile metrics and
- * report what the document actually laid out.
+ * Minimal Chrome DevTools Protocol driver.
  *
- * The device WebView paints the harness background but no content, while the
- * desktop browser renders the same page correctly. This script repeats the load
- * with the device's exact viewport (1080x2400 at dpr 2.75, mobile) so the
- * difference can be narrowed down without a device in hand.
+ * Two uses:
+ *   - reproduce a load with exact device metrics on desktop Chrome;
+ *   - attach to the WebView inside the installed debug APK (through
+ *     `adb forward`) and read what the page actually laid out.
  *
  * Usage:
  *   node scripts/cdp-probe.mjs --cdp http://127.0.0.1:9333 --url <url> \
  *     --width 1080 --height 2400 --dpr 2.75 --shot out.png
+ *   node scripts/cdp-probe.mjs --cdp http://127.0.0.1:9222 --nav false --shot out.png
  */
 import { writeFileSync } from 'node:fs'
 
@@ -20,20 +20,19 @@ const arg = (name, fallback) => {
 }
 
 const cdpRoot = arg('cdp', 'http://127.0.0.1:9333')
-const url = arg('url')
+const url = arg('url', '')
+const navigate = arg('nav', url ? 'true' : 'false') === 'true'
 const width = Number(arg('width', '1080'))
 const height = Number(arg('height', '2400'))
 const dpr = Number(arg('dpr', '2.75'))
 const mobile = arg('mobile', 'true') !== 'false'
+const applyMetrics = arg('metrics', 'false') === 'true'
 const shotPath = arg('shot', '')
-
-if (!url) {
-  console.error('missing --url')
-  process.exit(2)
-}
+const evaluateOnly = arg('eval', '')
 
 const targets = await (await fetch(`${cdpRoot}/json/list`)).json()
-const page = targets.find(t => t.type === 'page')
+const pages = targets.filter(t => t.type === 'page')
+const page = pages.find(t => !t.url.startsWith('devtools://')) ?? pages[0]
 if (!page) {
   console.error('no page target')
   process.exit(2)
@@ -42,7 +41,6 @@ if (!page) {
 const ws = new WebSocket(page.webSocketDebuggerUrl)
 const pending = new Map()
 let nextId = 1
-const events = []
 
 ws.addEventListener('message', event => {
   const msg = JSON.parse(event.data)
@@ -51,9 +49,7 @@ ws.addEventListener('message', event => {
     pending.delete(msg.id)
     if (msg.error) reject(new Error(JSON.stringify(msg.error)))
     else resolve(msg.result)
-    return
   }
-  if (msg.method) events.push(msg.method)
 })
 
 await new Promise((resolve, reject) => {
@@ -72,33 +68,35 @@ const sleep = ms => new Promise(r => setTimeout(r, ms))
 
 await send('Page.enable')
 await send('Runtime.enable')
-await send('Emulation.setDeviceMetricsOverride', {
-  width,
-  height,
-  deviceScaleFactor: dpr,
-  mobile,
-})
 
-await send('Page.navigate', { url })
-
-// Wait for the SPA to finish its first paint pass.
-let ready = false
-for (let i = 0; i < 90; i += 1) {
-  await sleep(500)
-  const state = await send('Runtime.evaluate', {
-    expression: 'document.readyState',
-    returnByValue: true,
+if (applyMetrics) {
+  await send('Emulation.setDeviceMetricsOverride', {
+    width,
+    height,
+    deviceScaleFactor: dpr,
+    mobile,
   })
-  if (state.result?.value === 'complete') {
-    ready = true
-    break
-  }
 }
-if (!ready) console.log('warning: document never reported complete')
 
-await sleep(4000)
+if (navigate) {
+  await send('Page.navigate', { url })
+  let ready = false
+  for (let i = 0; i < 90; i += 1) {
+    await sleep(500)
+    const state = await send('Runtime.evaluate', {
+      expression: 'document.readyState',
+      returnByValue: true,
+    })
+    if (state.result?.value === 'complete') {
+      ready = true
+      break
+    }
+  }
+  if (!ready) console.log('warning: document never reported complete')
+  await sleep(4000)
+}
 
-const layoutExpression = `(() => {
+const layoutExpression = evaluateOnly || `(() => {
   const d = document, de = d.documentElement, b = d.body
   const app = d.getElementById('app') || d.querySelector('#root')
   const first = app && app.firstElementChild
@@ -123,7 +121,7 @@ const layoutExpression = `(() => {
 })()`
 
 const layout = await send('Runtime.evaluate', { expression: layoutExpression, returnByValue: true })
-console.log('layout:', layout.result?.value)
+console.log('layout:', layout.result?.value, layout.exceptionDetails ? JSON.stringify(layout.exceptionDetails) : '')
 
 if (shotPath) {
   const shot = await send('Page.captureScreenshot', { format: 'png' })
