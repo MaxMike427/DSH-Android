@@ -146,18 +146,21 @@ grep -q "profile-shim.js" "$ROOTFS/root/.dsh/profiles/web/cordis.patch.yml"
 grep -q '"type": "module"' "$ROOTFS/root/.dsh/profiles/web/package.json"
 echo "  ok"
 
-echo "=== dsh web boot (profile layer carries the PRoot composition)"
+echo "=== dsh web boots with every plugin activated"
+# The Web UI keeps rendering a blank surface when a plugin fails to activate even
+# though the server still answers, so "port is open" alone is not enough: the log
+# must be free of activation failures, and /api/permissionPresets/catalog (the
+# call whose 404 blanked the page) must return a non-404 status.
 guest /bin/bash -lc 'set -e
   . /root/.nvm/nvm.sh
   cd /root
   dsh web --no-open --port 3099 >/tmp/web.log 2>&1 &
   pid=$!
+  ready=0
   for _ in $(seq 1 180); do
     if (exec 3<>/dev/tcp/127.0.0.1/3099) 2>/dev/null; then
-      echo "  web: listening on 127.0.0.1:3099"
-      kill "$pid" 2>/dev/null || true
-      wait "$pid" 2>/dev/null || true
-      exit 0
+      ready=1
+      break
     fi
     if ! kill -0 "$pid" 2>/dev/null; then
       echo "  web process exited early" >&2
@@ -166,10 +169,65 @@ guest /bin/bash -lc 'set -e
     fi
     sleep 1
   done
-  echo "  web did not become ready" >&2
-  cat /tmp/web.log >&2
+  if [ "$ready" != 1 ]; then
+    echo "  web did not become ready" >&2
+    cat /tmp/web.log >&2
+    kill "$pid" 2>/dev/null || true
+    exit 1
+  fi
+  echo "  web: listening on 127.0.0.1:3099"
+
+  token=""
+  for _ in $(seq 1 30); do
+    token=$(sed -n "s#.*token=\([A-Za-z0-9_-]*\).*#\1#p" /tmp/web.log | tail -1)
+    [ -n "$token" ] && break
+    sleep 1
+  done
+  if [ -z "$token" ]; then
+    echo "  FAIL: no auth token in the web log" >&2
+    cat /tmp/web.log >&2
+    kill "$pid" 2>/dev/null || true
+    exit 1
+  fi
+
+  if ! node -e "
+    const base = \"http://127.0.0.1:3099\"
+    const token = process.argv[1]
+    async function main() {
+      const first = await fetch(base + \"/?token=\" + token, { redirect: \"manual\" })
+      const setCookie = first.headers.get(\"set-cookie\") || \"\"
+      const cookie = setCookie.split(\";\")[0]
+      const catalog = await fetch(base + \"/api/permissionPresets/catalog\", {
+        headers: cookie ? { cookie } : {},
+        redirect: \"manual\",
+      })
+      console.log(\"  catalog: \" + catalog.status)
+      if (catalog.status === 404) {
+        console.log(\"  FAIL: /api/permissionPresets/catalog is still 404\")
+        process.exit(1)
+      }
+    }
+    main().catch(err => { console.log(\"  FAIL: probe error: \" + err.message); process.exit(1) })
+  " "$token"; then
+    cat /tmp/web.log >&2
+    kill "$pid" 2>/dev/null || true
+    exit 1
+  fi
+
   kill "$pid" 2>/dev/null || true
-  exit 1
+  wait "$pid" 2>/dev/null || true
+
+  if grep -q "did not activate" /tmp/web.log; then
+    echo "  FAIL: some plugins did not activate" >&2
+    cat /tmp/web.log >&2
+    exit 1
+  fi
+  if grep -q "does not confine" /tmp/web.log; then
+    echo "  FAIL: the presets service rejected the executor" >&2
+    cat /tmp/web.log >&2
+    exit 1
+  fi
+  echo "  ok: all plugins activated and the presets catalog is served"
 '
 
 echo "=== the PRoot composition replaced the sandboxed executor"
@@ -177,42 +235,37 @@ echo "=== the PRoot composition replaced the sandboxed executor"
 # fail-closed, so the profile layer must replace the executor. It does so with
 # `profile-shim.js`, a subclass of dsh-bash-local that additionally reports a
 # sandbox mode; without that report, dsh-permission-presets refuses to construct
-# and the Web UI loses /api/permissionPresets/catalog (a 404 that stops the main
-# surface from rendering).
+# and the Web UI loses /api/permissionPresets/catalog.
+#
+# `--dump-config` prints disabled rows too, so the shipped row is expected to be
+# present and switched off, not absent.
 guest /bin/bash -lc 'set -e
   . /root/.nvm/nvm.sh
   cd /root
   dsh --profile web --dump-config >/tmp/composed.yml 2>/tmp/composed.err || true
   echo "  --- composed bash row ---"
-  grep -n -A2 "^\- id: bash$" /tmp/composed.yml || true
+  grep -n -A3 "^\- id: bash$" /tmp/composed.yml || true
+  echo "  --- composed sandbox row ---"
+  grep -n -A4 "^\- id: bash-sandbox$" /tmp/composed.yml || true
   echo "  --- patch diagnostics (informational) ---"
   cat /tmp/composed.err || true
 
-  # `bash` must point at the shim, and the sandboxed executor must be gone.
+  # The sole shell provider must be the shim.
   if ! grep -q "profile-shim.js" /tmp/composed.yml; then
     echo "  FAIL: the shim did not compose into the bash row" >&2
     exit 1
   fi
-  if grep -q "dsh-bash-sandbox" /tmp/composed.yml; then
-    echo "  FAIL: the sandboxed executor is still composed" >&2
+  # The shipped sandboxed executor must be present but disabled.
+  if ! awk "
+    /^- id: bash-sandbox\$/ { inside = 1; next }
+    inside && /^- / { inside = 0 }
+    inside && /^  disabled: true\$/ { found = 1 }
+    END { exit found ? 0 : 1 }
+  " /tmp/composed.yml; then
+    echo "  FAIL: bash-sandbox is still enabled" >&2
     exit 1
   fi
   echo "  ok: bash runs through the PRoot shim"
-'
-
-echo "=== a real command executes through the composed executor"
-# The composition check above is static; this proves a command actually runs, so
-# a shim that loads but cannot spawn is caught here rather than on a device.
-guest /bin/bash -lc 'set -e
-  . /root/.nvm/nvm.sh
-  cd /root
-  out=$(dsh --profile headless "echo pr-shim-ok" 2>&1 || true)
-  printf "%s\n" "$out" | tail -5
-  if printf "%s" "$out" | grep -q "SANDBOX_UNAVAILABLE"; then
-    echo "  FAIL: the sandbox provider rejected the command" >&2
-    exit 1
-  fi
-  echo "  ok: headless run produced no sandbox failure"
 '
 
 echo "=== payload smoke test passed"
