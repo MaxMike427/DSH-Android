@@ -9,17 +9,19 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
-    <!-- Shared storage: legacy runtime permissions for API 28 and below,
-         per-media permissions for Android 13+, and all-files access (API 30+),
-         which is what the guest actually needs to read/write Download,
-         Documents, DCIM and the rest of the public volume. -->
-    <uses-permission
-        android:name="android.permission.READ_EXTERNAL_STORAGE"
-        android:maxSdkVersion="32" />
-    <uses-permission
-        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
-        android:maxSdkVersion="28" />
+    <!-- Shared storage.
+         targetSdk is 28 (PRoot needs exec() from app storage), so the app runs
+         under the legacy storage model: the runtime READ/WRITE permissions are
+         what grant /storage/emulated/0 access, NOT MANAGE_EXTERNAL_STORAGE
+         (that switch does not even appear for targetSdk < 30).
+         maxSdkVersion must therefore NOT be set on READ_EXTERNAL_STORAGE: the
+         platform drops a permission whose maxSdkVersion is below the device SDK,
+         which silently removed it from the runtime grant list on Android 16. -->
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
+    <!-- Declared for completeness; only effective on targetSdk >= 30. -->
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+    <!-- Android 13+ per-media permissions, used when the legacy grant is absent. -->
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
     <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />

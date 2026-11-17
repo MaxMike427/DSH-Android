@@ -33,12 +33,20 @@ object StorageAccess {
 
     private const val ALL_FILES_SETTINGS_ACTION = Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION
 
-    /** True when the app can read and write the shared storage root. */
+    /**
+     * True when the app can read and write the shared storage root.
+     *
+     * With targetSdk 28 the platform keeps the legacy model, so the runtime
+     * READ/WRITE_EXTERNAL_STORAGE grant is the real gate. `isExternalStorageManager`
+     * is only consulted on targetSdk >= 30, where that switch exists.
+     */
     fun hasBroadAccess(context: Context): Boolean {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            return Environment.isExternalStorageManager()
+        if (hasLegacyPermission(context)) return true
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            Environment.isExternalStorageManager()
+        } else {
+            false
         }
-        return hasLegacyPermission(context)
     }
 
     private fun hasLegacyPermission(context: Context): Boolean {
@@ -46,33 +54,31 @@ object StorageAccess {
             context,
             Manifest.permission.READ_EXTERNAL_STORAGE,
         ) == PackageManager.PERMISSION_GRANTED
-        if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
-            val write = ContextCompat.checkSelfPermission(
-                context,
-                Manifest.permission.WRITE_EXTERNAL_STORAGE,
-            ) == PackageManager.PERMISSION_GRANTED
-            return read && write
-        }
-        return read
+        val write = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.WRITE_EXTERNAL_STORAGE,
+        ) == PackageManager.PERMISSION_GRANTED
+        // Both are required: the guest writes into Download/Documents, and a
+        // read-only grant would surface as EACCES mid-task instead of here.
+        return read && write
     }
 
     /** Runtime permissions to request before the guest starts. */
     fun legacyPermissions(): Array<String> {
+        // targetSdk is 28, so the platform applies the legacy storage model even
+        // on Android 16: READ/WRITE_EXTERNAL_STORAGE is what grants the shared
+        // volume. The per-media permissions are requested as well for devices
+        // that report them, but they do not replace the legacy grant here.
+        val permissions = mutableListOf(
+            Manifest.permission.READ_EXTERNAL_STORAGE,
+            Manifest.permission.WRITE_EXTERNAL_STORAGE,
+        )
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            return arrayOf(
-                Manifest.permission.READ_MEDIA_IMAGES,
-                Manifest.permission.READ_MEDIA_VIDEO,
-                Manifest.permission.READ_MEDIA_AUDIO,
-            )
+            permissions += Manifest.permission.READ_MEDIA_IMAGES
+            permissions += Manifest.permission.READ_MEDIA_VIDEO
+            permissions += Manifest.permission.READ_MEDIA_AUDIO
         }
-        return if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
-            arrayOf(
-                Manifest.permission.READ_EXTERNAL_STORAGE,
-                Manifest.permission.WRITE_EXTERNAL_STORAGE,
-            )
-        } else {
-            arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
-        }
+        return permissions.toTypedArray()
     }
 
     /** Opens the "All files access" screen for this app (API 30+). */

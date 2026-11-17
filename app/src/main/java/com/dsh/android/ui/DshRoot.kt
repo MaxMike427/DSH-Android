@@ -430,6 +430,10 @@ private fun VolumeKeyOverlay(onVolumeUp: () -> Unit, onVolumeDown: () -> Unit) {
 @Composable
 private fun DshWebView(url: String, modifier: Modifier = Modifier) {
     var lastError by remember { mutableStateOf<String?>(null) }
+    // Load each URL exactly once. `WebView.url` reports the normalized URL after
+    // redirects, so comparing it against the requested URL would reload the page
+    // on every recomposition and leave the screen blank.
+    val loaded = remember { mutableStateOf<String?>(null) }
     AndroidView(
         modifier = modifier,
         factory = { context ->
@@ -477,19 +481,48 @@ private fun DshWebView(url: String, modifier: Modifier = Modifier) {
                         }
                     }
 
+                    override fun onPageFinished(view: WebView, finishedUrl: String?) {
+                        android.util.Log.i("DSH_WEBVIEW", "onPageFinished: $finishedUrl")
+                        view.evaluateJavascript(
+                            "(function(){var b=document.body;return JSON.stringify({" +
+                                "title:document.title," +
+                                "bodyLen:b?b.innerHTML.length:-1," +
+                                "text:(b?b.innerText:'').slice(0,120)," +
+                                "bg:b?getComputedStyle(b).backgroundColor:''})})()"
+                        ) { result -> android.util.Log.i("DSH_WEBVIEW", "dom: $result") }
+                    }
+
                     override fun onReceivedError(
                         view: WebView,
                         request: WebResourceRequest,
                         error: android.webkit.WebResourceError,
                     ) {
-                        if (request.isForMainFrame) lastError = error.description?.toString()
+                        if (request.isForMainFrame) {
+                            lastError = error.description?.toString()
+                            android.util.Log.e("DSH_WEBVIEW", "error ${error.errorCode}: ${error.description}")
+                        }
+                    }
+
+                    override fun onReceivedHttpError(
+                        view: WebView,
+                        request: WebResourceRequest,
+                        errorResponse: android.webkit.WebResourceResponse,
+                    ) {
+                        android.util.Log.e(
+                            "DSH_WEBVIEW",
+                            "http ${errorResponse.statusCode} for ${request.url}",
+                        )
                     }
                 }
                 loadUrl(url)
+                loaded.value = url
             }
         },
         update = { view ->
-            if (view.url != url) view.loadUrl(url)
+            if (loaded.value != url) {
+                loaded.value = url
+                view.loadUrl(url)
+            }
         },
     )
 }
