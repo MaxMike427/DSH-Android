@@ -33,6 +33,13 @@
 - id: permission
   disabled: true
 
+# Directory picking: `-auto` probes the host at boot and falls back to `browse`
+# when it cannot prove a native chooser is reachable. On Android that probe has
+# no display and no zenity/kdialog, so pinning `browse` removes the guesswork and
+# gives the Web UI a working "Choose workspace" dialog.
+- id: directory-picker
+  name: '@deepseek-ai/dsh-host-directory-picker-browse'
+
 - insert:
     - id: bash-local
       name: '@deepseek-ai/dsh-bash-local'

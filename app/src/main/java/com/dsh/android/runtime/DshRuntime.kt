@@ -181,6 +181,10 @@ class DshRuntime(
 
         _state.value = RuntimeState.Starting("Launching DeepSeekRuntime")
         paths.serverLog.parentFile?.mkdirs()
+        // Start each run with an empty log: the token is printed at startup and
+        // an appended log would keep offering tokens from previous runs, which
+        // are no longer valid.
+        runCatching { paths.serverLog.delete() }
 
         try {
             writeNetworkConfig()
@@ -405,12 +409,19 @@ class DshRuntime(
      */
     private fun readTokenUrl(): String? {
         val pattern = Regex("""http://127\.0\.0\.1:$port/\?token=[A-Za-z0-9_\-]+""")
+
+        // The log is appended to across restarts, so it can hold tokens from
+        // earlier runs; only the last one is valid. Search from the end.
+        fun latest(): String? = runCatching {
+            val lines = paths.serverLog.readLines()
+            lines.asReversed().firstNotNullOfOrNull { pattern.find(it)?.value }
+        }.getOrNull()
+
         repeat(30) {
-            val text = runCatching { paths.serverLog.readText() }.getOrDefault("")
-            pattern.find(text)?.let { return it.value }
+            latest()?.let { return it }
             Thread.sleep(200)
         }
-        return pattern.find(runCatching { paths.serverLog.readText() }.getOrDefault(""))?.value
+        return latest()
     }
 
     private fun waitForHttp(process: Process, timeoutSeconds: Int): Boolean {

@@ -258,22 +258,13 @@ private fun WebScreen(
     Box(Modifier.fillMaxSize()) {
         DshWebView(url = url, modifier = Modifier.fillMaxSize())
 
-        AnimatedVisibility(
-            visible = overlay != Overlay.NONE,
-            enter = slideInVertically { it },
-            exit = slideOutVertically { it },
-        ) {
+        if (overlay != Overlay.NONE) {
+            // Rendered as a sibling that only exists while open, so the WebView
+            // keeps every touch event when the panel is closed.
             Column(
                 Modifier
                     .fillMaxSize()
                     .background(Color(0xF20B0F14))
-                    // Consume taps so they never reach the WebView underneath;
-                    // without this the panel renders but its buttons do not
-                    // receive the touch.
-                    .clickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null,
-                    ) { }
                     .statusBarsPadding()
                     .navigationBarsPadding(),
             ) {
@@ -454,6 +445,21 @@ private fun DshWebView(url: String, modifier: Modifier = Modifier) {
                     useWideViewPort = true
                     loadWithOverviewMode = true
                     textZoom = 100
+                }
+                // The WebView sits inside a Compose Box and must receive touches
+                // itself: without clickable/focusable it never gets them, which
+                // makes the whole page appear frozen even though it renders.
+                isClickable = true
+                isFocusable = true
+                isFocusableInTouchMode = true
+                requestFocus()
+                setOnTouchListener { view, event ->
+                    // Hand the event back to the WebView after taking focus, so
+                    // scrolling and links keep working.
+                    if (event.actionMasked == android.view.MotionEvent.ACTION_DOWN) {
+                        view.requestFocus()
+                    }
+                    false
                 }
                 webViewClient = object : WebViewClient() {
                     override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
