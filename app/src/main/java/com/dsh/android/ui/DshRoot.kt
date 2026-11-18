@@ -230,19 +230,10 @@ private fun LogList(logs: List<LogLine>, modifier: Modifier = Modifier) {
 /**
  * Full-screen Web UI.
  *
- * No on-screen buttons by default: the UI is the product, and a floating button
- * row overlaps the harness's own controls. Volume + opens a small panel with
- * Logs / Terminal / Stop; volume - closes it. The keys are consumed so they do
- * not also change media volume while the panel is in use.
- */
-/**
- * Full-screen Web UI.
- *
- * The embedded WebView renders the page background but not its content on some
- * devices (the DOM loads, nothing paints). Rather than ship a second browser
- * engine, the harness UI is opened in a Custom Tab — the system Chrome engine,
- * which renders correctly here — while the in-app surface stays available for
- * controls, logs and the terminal.
+ * The harness fills the whole surface: no app chrome sits on top of it, because
+ * the floating buttons overlapped the harness's own controls. Volume + opens a
+ * small panel with Logs / Terminal / Stop; volume − closes it. The keys are
+ * consumed so they do not also change media volume while the panel is in use.
  */
 @Composable
 private fun WebScreen(
@@ -253,7 +244,6 @@ private fun WebScreen(
     onExec: (String) -> Unit,
 ) {
     var overlay by rememberSaveable { mutableStateOf(Overlay.NONE) }
-    var openedExternally by rememberSaveable { mutableStateOf(false) }
     val url = state.url
     val context = LocalContext.current
 
@@ -268,41 +258,6 @@ private fun WebScreen(
 
     Box(Modifier.fillMaxSize()) {
         DshWebView(url = url, modifier = Modifier.fillMaxSize())
-
-        // First-run affordance: the embedded view may paint nothing, so offer the
-        // working engine immediately instead of leaving the user on a black
-        // screen wondering whether the runtime started.
-        if (!openedExternally) {
-            Column(
-                Modifier
-                    .fillMaxSize()
-                    .background(Color(0xF20B0F14))
-                    .statusBarsPadding()
-                    .navigationBarsPadding()
-                    .padding(24.dp),
-                verticalArrangement = Arrangement.Center,
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
-                Text("DeepSeekRuntime is running", fontWeight = FontWeight.SemiBold, fontSize = 18.sp)
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    "The built-in view cannot render this page on your device. " +
-                        "Open it in the browser instead — the runtime is the same.",
-                    fontSize = 13.sp,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
-                )
-                Spacer(Modifier.height(20.dp))
-                Button(
-                    onClick = {
-                        openInBrowser(context, url)
-                        openedExternally = true
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                ) { Text("Open DeepSeekRuntime") }
-                Spacer(Modifier.height(8.dp))
-                TextButton(onClick = { openedExternally = true }) { Text("Try the built-in view") }
-            }
-        }
 
         if (overlay == Overlay.CONTROLS) {
             Column(
@@ -557,11 +512,6 @@ private fun DshWebView(url: String, modifier: Modifier = Modifier) {
                 isVerticalScrollBarEnabled = true
                 isHorizontalScrollBarEnabled = false
                 setBackgroundColor(android.graphics.Color.rgb(21, 21, 23))
-                // The page loads (DOM is complete) but paints nothing on this
-                // device. Layer type SOFTWARE bypasses the hardware layer that
-                // fails to composite, trading some scrolling smoothness for a
-                // visible UI.
-                setLayerType(android.view.View.LAYER_TYPE_SOFTWARE, null)
                 // The WebView sits inside a Compose Box and must receive touches
                 // itself: without clickable/focusable it never gets them, which
                 // makes the whole page appear frozen even though it renders.
@@ -593,31 +543,27 @@ private fun DshWebView(url: String, modifier: Modifier = Modifier) {
                         }
                     }
 
+                        override fun onPageStarted(view: WebView, startedUrl: String?, favicon: android.graphics.Bitmap?) {
+                            // Run as soon as the document exists: the page's own
+                            // `height: 100%` rules collapse the shell before the
+                            // first paint on this WebView, so waiting for
+                            // onPageFinished leaves a visible blank frame.
+                            view.evaluateJavascript(VIEWPORT_FIX_SCRIPT, null)
+                        }
+
                         override fun onPageFinished(view: WebView, finishedUrl: String?) {
-                            // A black screen with a fully loaded DOM means the
-                            // page painted almost nothing: measure the real
-                            // layout from inside the document to tell "not
-                            // rendered" apart from "rendered off-screen".
+                            // Re-apply after load: the guard in the script makes
+                            // this a no-op when onPageStarted already ran it, and
+                            // it covers documents that replaced `#root` while
+                            // loading or were restored from the back/forward cache.
+                            view.evaluateJavascript(VIEWPORT_FIX_SCRIPT, null)
                             android.util.Log.i(
                                 "DSH_WEBVIEW",
                                 "onPageFinished: $finishedUrl size=${view.width}x${view.height}",
                             )
-                            view.evaluateJavascript(
-                                "(function(){" +
-                                    "var d=document,de=d.documentElement,b=d.body," +
-                                    "app=d.getElementById('app')||d.querySelector('#root');" +
-                                    "var first=app&&app.firstElementChild;" +
-                                    "function r(e){if(!e)return null;var x=e.getBoundingClientRect();" +
-                                    "return {w:Math.round(x.width),h:Math.round(x.height),t:Math.round(x.top),l:Math.round(x.left)}};" +
-                                    "return JSON.stringify({" +
-                                    "vw:innerWidth,vh:innerHeight,dpr:devicePixelRatio," +
-                                    "docW:de.scrollWidth,docH:de.scrollHeight," +
-                                    "bodyW:b?Math.round(b.getBoundingClientRect().width):-1," +
-                                    "bodyH:b?Math.round(b.getBoundingClientRect().height):-1," +
-                                    "app:r(app),first:r(first)," +
-                                    "text:(b?b.innerText:'').slice(0,80)" +
-                                    "})})()",
-                            ) { result -> android.util.Log.i("DSH_WEBVIEW", "layout: $result") }
+                            view.evaluateJavascript(LAYOUT_PROBE_SCRIPT) { result ->
+                                android.util.Log.i("DSH_WEBVIEW", "layout: $result")
+                            }
                         }
 
                     override fun onReceivedError(
@@ -642,8 +588,31 @@ private fun DshWebView(url: String, modifier: Modifier = Modifier) {
                         )
                     }
                 }
-                loadUrl(url)
-                loaded.value = url
+                // `loadUrl` must wait until the WebView has a real size.
+                //
+                // The page shell is laid out with `html, body, #root { height:
+                // 100% }`, which resolves against the initial containing block.
+                // Loading while the view is still 0x0 (its state when the Compose
+                // factory runs) makes this WebView latch a zero-height viewport:
+                // every percentage height and viewport unit then stays 0 for the
+                // life of the document, so the whole UI collapses into the
+                // background and only the page colour gets painted. The page's
+                // `dvh`-sized dialogs collapse the same way.
+                //
+                // A reload after the view had a size stayed broken too, so the
+                // first load is what latches it: defer it instead of retrying.
+                val startWhenSized = object : android.view.ViewTreeObserver.OnPreDrawListener {
+                    override fun onPreDraw(): Boolean {
+                        if (width <= 0 || height <= 0) return true
+                        viewTreeObserver.removeOnPreDrawListener(this)
+                        if (loaded.value != url) {
+                            loaded.value = url
+                            loadUrl(url)
+                        }
+                        return true
+                    }
+                }
+                viewTreeObserver.addOnPreDrawListener(startWhenSized)
             }
         },
         update = { view ->
