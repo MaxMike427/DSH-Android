@@ -588,31 +588,14 @@ private fun DshWebView(url: String, modifier: Modifier = Modifier) {
                         )
                     }
                 }
-                // `loadUrl` must wait until the WebView has a real size.
-                //
-                // The page shell is laid out with `html, body, #root { height:
-                // 100% }`, which resolves against the initial containing block.
-                // Loading while the view is still 0x0 (its state when the Compose
-                // factory runs) makes this WebView latch a zero-height viewport:
-                // every percentage height and viewport unit then stays 0 for the
-                // life of the document, so the whole UI collapses into the
-                // background and only the page colour gets painted. The page's
-                // `dvh`-sized dialogs collapse the same way.
-                //
-                // A reload after the view had a size stayed broken too, so the
-                // first load is what latches it: defer it instead of retrying.
-                val startWhenSized = object : android.view.ViewTreeObserver.OnPreDrawListener {
-                    override fun onPreDraw(): Boolean {
-                        if (width <= 0 || height <= 0) return true
-                        viewTreeObserver.removeOnPreDrawListener(this)
-                        if (loaded.value != url) {
-                            loaded.value = url
-                            loadUrl(url)
-                        }
-                        return true
-                    }
-                }
-                viewTreeObserver.addOnPreDrawListener(startWhenSized)
+                // Load immediately. Deferring this until the view has a non-zero
+                // size was tried and did not change anything: this WebView keeps
+                // reporting viewport units as 0 for the document's whole life
+                // regardless of when the first navigation happens, and a reload
+                // afterwards stayed broken too. The layout is repaired from the
+                // page side instead; see WebViewViewportFix.kt.
+                loadUrl(url)
+                loaded.value = url
             }
         },
         update = { view ->
