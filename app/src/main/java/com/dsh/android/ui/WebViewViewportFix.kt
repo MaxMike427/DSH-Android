@@ -158,6 +158,75 @@ val VIEWPORT_FIX_SCRIPT: String = """
 """.trimIndent()
 
 /**
+ * Routes the harness's sign-in popup to the system browser.
+ *
+ * The account panel starts sign-in like this:
+ *
+ * ```js
+ * this.popup = window.open('about:blank', '_blank')
+ * this.popup.opener = null
+ * this.popup.location.replace(authorizeUrl)
+ * ```
+ *
+ * It only ever uses the returned window to navigate, so the window can be a
+ * stand-in: this script returns a proxy whose `location` writes are forwarded to
+ * [HostBridge.openExternal], which hands the authorization URL to the system
+ * browser. The platform then redirects that browser to the loopback callback the
+ * host issued for the attempt (`http://127.0.0.1:3080/...`), where the host
+ * completes the exchange — the app never has to host a login page itself, and the
+ * user gets the browser they already trust to fill in credentials.
+ *
+ * The real `window.open` is left alone for any other URL so ordinary
+ * `target=_blank` links keep working.
+ */
+val EXTERNAL_OPEN_SCRIPT: String = """
+(function () {
+  if (window.__dshExternalOpen) return;
+  var bridge = window.DshHost;
+  if (!bridge || !bridge.openExternal) return;
+  window.__dshExternalOpen = true;
+
+  function forward(url) {
+    if (!url) return;
+    var text = String(url);
+    if (text === 'about:blank' || text === '') return;
+    try { bridge.openExternal(text); } catch (e) { /* bridge gone: ignore */ }
+  }
+
+  var realOpen = window.open;
+  window.open = function (url, name, features) {
+    var target = url ? String(url) : '';
+    // The sign-in flow opens a blank window and navigates it afterwards.
+    if (target === '' || target === 'about:blank') {
+      var proxy = {
+        closed: false,
+        opener: null,
+        name: name || '',
+        focus: function () {},
+        blur: function () {},
+        postMessage: function () {},
+        close: function () { proxy.closed = true; }
+      };
+      var location = {
+        replace: forward,
+        assign: forward,
+        reload: function () {}
+      };
+      Object.defineProperty(location, 'href', {
+        get: function () { return 'about:blank'; },
+        set: forward
+      });
+      proxy.location = location;
+      return proxy;
+    }
+    // A real URL: still route it outside, matching the old behaviour.
+    forward(target);
+    return null;
+  };
+})();
+""".trimIndent()
+
+/**
  * Diagnostic snapshot of the live layout, logged after each page load.
  *
  * The failure it describes is silent: the DOM completes and the document reports

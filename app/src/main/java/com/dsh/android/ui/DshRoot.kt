@@ -554,6 +554,9 @@ private fun DshWebView(url: String, modifier: Modifier = Modifier) {
                 isVerticalScrollBarEnabled = true
                 isHorizontalScrollBarEnabled = false
                 setBackgroundColor(android.graphics.Color.rgb(21, 21, 23))
+                // Lets the page hand the sign-in URL to the system browser; see
+                // EXTERNAL_OPEN_SCRIPT and HostBridge.
+                addJavascriptInterface(HostBridge(context), "DshHost")
                 // The WebView sits inside a Compose Box and must receive touches
                 // itself: without clickable/focusable it never gets them, which
                 // makes the whole page appear frozen even though it renders.
@@ -570,19 +573,34 @@ private fun DshWebView(url: String, modifier: Modifier = Modifier) {
                     false
                 }
                 webViewClient = object : WebViewClient() {
+                    /**
+                     * Keep the harness in the app; hand real outbound links to the
+                     * system browser.
+                     *
+                     * Everything the sign-in flow navigates is a redirect the flow
+                     * itself needs to complete, so those stay in the WebView. Only
+                     * a navigation the user started by activating a link (a
+                     * `LINK_TYPE`, which is what a click on an `<a>` produces) is
+                     * sent outside — that is the "read this page in my browser"
+                     * case. Without the distinction the platform's post-sign-in
+                     * redirect opened a browser over the app and the flow looked
+                     * like it had jumped away.
+                     */
                     override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
                         val target = request.url
-                        return if (target.host == "127.0.0.1" || target.host == "localhost") {
-                            false
-                        } else {
-                            runCatching {
-                                context.startActivity(
-                                    android.content.Intent(android.content.Intent.ACTION_VIEW, target)
-                                        .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
-                                )
-                            }
+                        val internal = target.host == "127.0.0.1" || target.host == "localhost"
+                        if (internal) return false
+                        if (!request.isForMainFrame) return false
+                        // A redirect the page issued while loading is part of the
+                        // flow; a link the user pressed is not.
+                        if (!request.hasGesture()) return false
+                        return runCatching {
+                            context.startActivity(
+                                android.content.Intent(android.content.Intent.ACTION_VIEW, target)
+                                    .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                            )
                             true
-                        }
+                        }.getOrDefault(false)
                     }
 
                         override fun onPageStarted(view: WebView, startedUrl: String?, favicon: android.graphics.Bitmap?) {
@@ -591,6 +609,9 @@ private fun DshWebView(url: String, modifier: Modifier = Modifier) {
                             // first paint on this WebView, so waiting for
                             // onPageFinished leaves a visible blank frame.
                             view.evaluateJavascript(VIEWPORT_FIX_SCRIPT, null)
+                            // Sign-in must reach the system browser before the
+                            // account panel calls window.open.
+                            view.evaluateJavascript(EXTERNAL_OPEN_SCRIPT, null)
                         }
 
                         override fun onPageFinished(view: WebView, finishedUrl: String?) {
@@ -599,6 +620,7 @@ private fun DshWebView(url: String, modifier: Modifier = Modifier) {
                             // it covers documents that replaced `#root` while
                             // loading or were restored from the back/forward cache.
                             view.evaluateJavascript(VIEWPORT_FIX_SCRIPT, null)
+                            view.evaluateJavascript(EXTERNAL_OPEN_SCRIPT, null)
                             android.util.Log.i(
                                 "DSH_WEBVIEW",
                                 "onPageFinished: $finishedUrl size=${view.width}x${view.height}",
@@ -631,15 +653,20 @@ private fun DshWebView(url: String, modifier: Modifier = Modifier) {
                     }
                 }
                 webChromeClient = object : android.webkit.WebChromeClient() {
+                    /** The popup currently hosting the sign-in window, if any. */
+                    private var activeLoginPopup: LoginPopup? = null
+
                     /**
                      * Sign-in opens a popup window (`window.open('about:blank')`)
-                     * and then drives it to the identity provider. Without this
-                     * callback the popup is never created: the click does nothing
-                     * and the OAuth callback has no window to return to.
+                     * and then navigates it to the identity provider. Without this
+                     * callback no window exists: the click does nothing and the
+                     * authorization page has nowhere to load.
                      *
-                     * The popup is handed to the *same* WebView rather than a
-                     * second one, so the flow shares the page's cookies and ends
-                     * where the harness expects — the app's own origin.
+                     * The transport must receive a WebView that is already attached
+                     * and visible, so the popup is a full-screen dialog rather than
+                     * a detached view — a detached one satisfies the API but gives
+                     * Chromium no window to show, which surfaced as "登录失败" on the
+                     * platform page.
                      */
                     override fun onCreateWindow(
                         view: WebView,
@@ -648,33 +675,25 @@ private fun DshWebView(url: String, modifier: Modifier = Modifier) {
                         resultMsg: android.os.Message,
                     ): Boolean {
                         val transport = resultMsg.obj as? WebView.WebViewTransport ?: return false
-                        // A dedicated child view would need its own lifecycle; the
-                        // harness only needs the popup's navigation to happen, and
-                        // it navigates the opener itself once the callback lands.
-                        val popup = WebView(view.context)
-                        popup.settings.javaScriptEnabled = true
-                        popup.settings.domStorageEnabled = true
-                        popup.settings.userAgentString = view.settings.userAgentString
-                        popup.webViewClient = object : WebViewClient() {
-                            override fun shouldOverrideUrlLoading(
-                                child: WebView,
-                                request: WebResourceRequest,
-                            ): Boolean {
-                                val target = request.url
-                                // The callback returns to the app's own origin:
-                                // load it in the main view so the harness sees the
-                                // result, then drop the popup.
-                                if (target.host == "127.0.0.1" || target.host == "localhost") {
-                                    view.post { view.loadUrl(target.toString()) }
-                                    child.post { child.destroy() }
-                                    return true
-                                }
-                                return false
-                            }
-                        }
-                        transport.webView = popup
+                        val popup = LoginPopup(view.context)
+                        popup.webView.webViewClient = LoginPopup.closeOnReturnToApp(popup, view)
+                        transport.webView = popup.webView
                         resultMsg.sendToTarget()
+                        popup.show()
+                        activeLoginPopup = popup
                         return true
+                    }
+
+                    /**
+                     * The harness closes the popup itself once its polling reports a
+                     * successful attempt, so the window has to honour that.
+                     */
+                    override fun onCloseWindow(window: WebView) {
+                        val popup = activeLoginPopup
+                        if (popup != null && popup.webView === window) {
+                            popup.dismiss()
+                            activeLoginPopup = null
+                        }
                     }
 
                     /**
