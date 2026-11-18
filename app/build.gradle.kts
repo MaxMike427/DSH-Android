@@ -37,12 +37,34 @@ android {
         buildConfig = true
     }
 
+    // A committed keystore, on purpose.
+    //
+    // CI generates a fresh debug key per run, which makes every build a
+    // different signer: installing a new APK over an old one then fails with
+    // INSTALL_FAILED_UPDATE_INCOMPATIBLE and the only way forward is an
+    // uninstall, which throws away the extracted Ubuntu rootfs. A stable key
+    // lets an update install in place and keep the runtime.
+    //
+    // The password is public because the key protects nothing: it exists so
+    // consecutive local builds, not to authenticate a publisher. There is no
+    // Play Store listing and no secret to defend.
+    signingConfigs {
+        create("stable") {
+            storeFile = rootProject.file("keystore/dsh.jks")
+            storePassword = "dshandroid"
+            keyAlias = "dsh"
+            keyPassword = "dshandroid"
+        }
+    }
+
     buildTypes {
         debug {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("stable")
         }
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("stable")
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
     }

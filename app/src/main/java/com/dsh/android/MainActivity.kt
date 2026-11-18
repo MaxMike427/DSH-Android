@@ -6,6 +6,9 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.getValue
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.dsh.android.ui.DshRoot
@@ -26,6 +29,7 @@ class MainActivity : ComponentActivity(), VolumeKeyHost {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        hideStatusBar()
 
         val app = application as DshApplication
 
@@ -49,6 +53,29 @@ class MainActivity : ComponentActivity(), VolumeKeyHost {
                 onMountsChanged = viewModel::refreshMounts,
             )
         }
+    }
+
+    /**
+     * Re-hide the status bar whenever the window regains focus.
+     *
+     * The harness UI puts its own sidebar toggle in the top-left corner. With the
+     * status bar drawn over the page that control sits underneath the clock and
+     * cannot be tapped, and the page cannot move it because the WebView fills the
+     * window. Hiding the bar gives the page the whole screen; the navigation bar
+     * stays so the gesture pill keeps working.
+     */
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) hideStatusBar()
+    }
+
+    private fun hideStatusBar() {
+        val controller = WindowCompat.getInsetsController(window, window.decorView)
+        controller.systemBarsBehavior =
+            WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        // Only the status bar: the navigation bar carries the gesture handle the
+        // user still needs to leave the app.
+        controller.hide(WindowInsetsCompat.Type.statusBars())
     }
 
     /**

@@ -151,6 +151,20 @@ sudo mkdir -p "$ROOTFS/opt/dsh"
 sudo cp "$REPO_ROOT/runtime/dsh/cordis.patch.yml" "$ROOTFS/opt/dsh/cordis.patch.yml"
 sudo chmod 0644 "$ROOTFS/opt/dsh/cordis.patch.yml"
 
+# First-use workspace directory.
+#
+# The harness creates its first workspace under the account's Documents folder
+# and finds that folder by running `xdg-user-dir DOCUMENTS`, which a PRoot guest
+# does not ship. The profile layer therefore passes `documentsDirectory`
+# explicitly (see cordis.patch.yml), and this is the directory it names. It is
+# deliberately a normal, visible path: the workspace picker starts in $HOME,
+# whose only entries are dotfiles it hides by default, so without this the picker
+# looks empty.
+log "create the first-use workspace directory"
+sudo mkdir -p "$ROOTFS/root/Documents/deepseek-harness/default-workspace"
+sudo chmod 0755 "$ROOTFS/root/Documents" "$ROOTFS/root/Documents/deepseek-harness" \
+  "$ROOTFS/root/Documents/deepseek-harness/default-workspace"
+
 cleanup_mounts
 trap - EXIT
 

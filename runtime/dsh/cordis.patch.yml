@@ -51,3 +51,19 @@
         timeoutMs: 60000
         maxTimeoutMs: 600000
 
+# First-use workspace.
+#
+# The harness creates one workspace on first run under the account's Documents
+# directory, which it locates by spawning `xdg-user-dir DOCUMENTS`. A PRoot guest
+# ships no xdg-user-dirs, so that spawn fails, no workspace is created, and the
+# Web UI opens on "选择工作区" with nothing to choose: the picker starts in
+# `/root`, whose entire content is dotfiles (`.bashrc`, `.dsh`, `.nvm`), and it
+# hides those by default.
+#
+# `documentsDirectory` is the controller's own override for that lookup
+# (`WorkspaceController.Config`), so supplying it skips the native probe
+# entirely. The directory itself is created by the rootfs build.
+- id: workspace-controller
+  config:
+    documentsDirectory: /root/Documents
+

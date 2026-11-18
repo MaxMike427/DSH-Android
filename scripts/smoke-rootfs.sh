@@ -144,6 +144,11 @@ test -f "$ROOTFS/root/.dsh/profiles/web/profile-shim.js"
 grep -q "profile-shim.js" "$ROOTFS/root/.dsh/profiles/web/cordis.patch.yml"
 # The shim is an ES module; the profile manifest must say so.
 grep -q '"type": "module"' "$ROOTFS/root/.dsh/profiles/web/package.json"
+# First-use workspace: without an explicit Documents directory the harness asks
+# `xdg-user-dir`, which the guest does not ship, so no workspace is ever created
+# and the Web UI opens on an empty picker.
+grep -q "documentsDirectory: /root/Documents" "$ROOTFS/root/.dsh/profiles/web/cordis.patch.yml"
+test -d "$ROOTFS/root/Documents/deepseek-harness/default-workspace"
 echo "  ok"
 
 echo "=== dsh web boots with every plugin activated"
