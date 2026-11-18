@@ -114,11 +114,26 @@ val VIEWPORT_FIX_SCRIPT: String = """
 
     var style = document.createElement('style');
     style.id = 'dsh-viewport-fix';
-    // Percentage heights only: viewport units are handled by the rewrite above.
+    // Three separate consequences of the same defect:
+    //
+    // 1. Percentage heights. `html, body, #root` are sized `height:100%`, which
+    //    resolves against a zero-height containing block, so they need the real
+    //    pixel height.
+    //
+    // 2. Absolutely positioned overlays. The harness's sheets use
+    //    `position:absolute; inset:0` for full-screen panels (settings, plugin
+    //    pages). Their containing block is the nearest positioned ancestor, and
+    //    with `html`/`body` static that falls back to the initial containing
+    //    block — which is zero-height here, so the panel and its overlay both
+    //    measured 0 and the settings dialog opened invisible. Making the root
+    //    elements positioned gives them a real box to fill.
+    //
+    // 3. Viewport units are handled by the rewrite below.
     style.textContent =
       ':root{--dsh-viewport-height:0px;--dsh-vh:0px;--dsh-vw:0px}' +
       'html,body,#root{height:var(--dsh-viewport-height)!important;' +
-      'min-height:var(--dsh-viewport-height)!important}';
+      'min-height:var(--dsh-viewport-height)!important}' +
+      'html,body{position:relative!important}';
     (document.head || document.documentElement).appendChild(style);
 
     apply();

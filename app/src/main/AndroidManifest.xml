@@ -25,6 +25,11 @@
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
     <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
+    <!-- Voice input (the harness's SenseVoice plugin records audio) and any
+         camera capture the page requests. WebView grants neither to the page
+         unless the app already holds them. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.CAMERA" />
 
     <!-- Payload is arm64-only: PRoot and the Ubuntu Base rootfs are aarch64. -->
     <uses-feature android:name="android.hardware.ram.low" android:required="false" />

@@ -259,6 +259,13 @@ private fun WebScreen(
     Box(Modifier.fillMaxSize()) {
         DshWebView(url = url, modifier = Modifier.fillMaxSize())
 
+        // Ask once for the hardware the page's own features use. The voice input
+        // plugin records audio; attachments may capture video. The WebView grants
+        // neither unless the app already holds the Android permission, so the
+        // request is made here rather than from onPermissionRequest (which cannot
+        // survive the system dialog).
+        RequestMediaPermissions()
+
         if (overlay == Overlay.CONTROLS) {
             Column(
                 Modifier
@@ -453,6 +460,36 @@ private fun TerminalPanel(
     }
 }
 
+/**
+ * Ask once for the hardware the harness page uses.
+ *
+ * The voice input plugin records audio (`RESOURCE_AUDIO_CAPTURE`) and file
+ * attachments may capture video. A WebView refuses both unless the app already
+ * holds the matching Android permission, and asking from
+ * `WebChromeClient.onPermissionRequest` is not possible because the request
+ * object does not survive the system dialog. So the permissions are requested
+ * here, on first appearance, and `onPermissionRequest` then answers from what the
+ * app already holds.
+ */
+@Composable
+private fun RequestMediaPermissions() {
+    val context = LocalContext.current
+    LaunchedEffect(Unit) {
+        val activity = context.findActivity() ?: return@LaunchedEffect
+        val wanted = arrayOf(
+            android.Manifest.permission.RECORD_AUDIO,
+            android.Manifest.permission.CAMERA,
+        )
+        val missing = wanted.filter {
+            androidx.core.content.ContextCompat.checkSelfPermission(activity, it) !=
+                android.content.pm.PackageManager.PERMISSION_GRANTED
+        }
+        if (missing.isNotEmpty()) {
+            activity.requestPermissions(missing.toTypedArray(), REQUEST_MEDIA_PERMISSIONS)
+        }
+    }
+}
+
 /** Bridge Activity-level key events into Compose state. */
 @Composable
 private fun VolumeKeyOverlay(onVolumeUp: () -> Unit, onVolumeDown: () -> Unit) {
@@ -508,6 +545,11 @@ private fun DshWebView(url: String, modifier: Modifier = Modifier) {
                     layoutAlgorithm = WebSettings.LayoutAlgorithm.NORMAL
                     // Let the page use the real device pixel width.
                     mediaPlaybackRequiresUserGesture = false
+                    // Sign-in opens a popup (`window.open('about:blank')`) and
+                    // then drives it, so JavaScript may open windows; the
+                    // WebChromeClient below receives them.
+                    javaScriptCanOpenWindowsAutomatically = true
+                    setSupportMultipleWindows(true)
                 }
                 isVerticalScrollBarEnabled = true
                 isHorizontalScrollBarEnabled = false
@@ -588,6 +630,89 @@ private fun DshWebView(url: String, modifier: Modifier = Modifier) {
                         )
                     }
                 }
+                webChromeClient = object : android.webkit.WebChromeClient() {
+                    /**
+                     * Sign-in opens a popup window (`window.open('about:blank')`)
+                     * and then drives it to the identity provider. Without this
+                     * callback the popup is never created: the click does nothing
+                     * and the OAuth callback has no window to return to.
+                     *
+                     * The popup is handed to the *same* WebView rather than a
+                     * second one, so the flow shares the page's cookies and ends
+                     * where the harness expects — the app's own origin.
+                     */
+                    override fun onCreateWindow(
+                        view: WebView,
+                        isDialog: Boolean,
+                        isUserGesture: Boolean,
+                        resultMsg: android.os.Message,
+                    ): Boolean {
+                        val transport = resultMsg.obj as? WebView.WebViewTransport ?: return false
+                        // A dedicated child view would need its own lifecycle; the
+                        // harness only needs the popup's navigation to happen, and
+                        // it navigates the opener itself once the callback lands.
+                        val popup = WebView(view.context)
+                        popup.settings.javaScriptEnabled = true
+                        popup.settings.domStorageEnabled = true
+                        popup.settings.userAgentString = view.settings.userAgentString
+                        popup.webViewClient = object : WebViewClient() {
+                            override fun shouldOverrideUrlLoading(
+                                child: WebView,
+                                request: WebResourceRequest,
+                            ): Boolean {
+                                val target = request.url
+                                // The callback returns to the app's own origin:
+                                // load it in the main view so the harness sees the
+                                // result, then drop the popup.
+                                if (target.host == "127.0.0.1" || target.host == "localhost") {
+                                    view.post { view.loadUrl(target.toString()) }
+                                    child.post { child.destroy() }
+                                    return true
+                                }
+                                return false
+                            }
+                        }
+                        transport.webView = popup
+                        resultMsg.sendToTarget()
+                        return true
+                    }
+
+                    /**
+                     * The page's own features ask for hardware access: the voice
+                     * input plugin records audio, and attachments may use the
+                     * camera. A WebView grants none of these unless the app
+                     * answers the request.
+                     *
+                     * The Android runtime permission is requested ahead of time by
+                     * [requestMediaPermissions] when this screen appears, so by
+                     * the time the page asks, the app either holds it (grant) or
+                     * the user refused it (deny). Asking here instead would need
+                     * the request object to outlive the system dialog, which the
+                     * WebView does not allow.
+                     */
+                    override fun onPermissionRequest(request: android.webkit.PermissionRequest) {
+                        val required = request.resources.mapNotNull { resource ->
+                            when (resource) {
+                                android.webkit.PermissionRequest.RESOURCE_AUDIO_CAPTURE ->
+                                    android.Manifest.permission.RECORD_AUDIO
+                                android.webkit.PermissionRequest.RESOURCE_VIDEO_CAPTURE ->
+                                    android.Manifest.permission.CAMERA
+                                else -> null
+                            }
+                        }
+                        val activity = context.findActivity()
+                        val granted = required.isNotEmpty() && activity != null && required.all {
+                            androidx.core.content.ContextCompat.checkSelfPermission(activity, it) ==
+                                android.content.pm.PackageManager.PERMISSION_GRANTED
+                        }
+                        if (granted) {
+                            request.grant(request.resources)
+                        } else {
+                            android.util.Log.i("DSH_WEBVIEW", "denied ${request.resources.joinToString()}")
+                            request.deny()
+                        }
+                    }
+                }
                 // Load immediately. Deferring this until the view has a non-zero
                 // size was tried and did not change anything: this WebView keeps
                 // reporting viewport units as 0 for the document's whole life
@@ -606,3 +731,12 @@ private fun DshWebView(url: String, modifier: Modifier = Modifier) {
         },
     )
 }
+
+/**
+ * Request code for the media permissions the harness page needs.
+ *
+ * The activity does not act on the result: [RequestMediaPermissions] asks once
+ * and `WebChromeClient.onPermissionRequest` reads whatever the app ended up
+ * holding. A distinct code keeps it from colliding with the storage request.
+ */
+private const val REQUEST_MEDIA_PERMISSIONS = 0x0D5A

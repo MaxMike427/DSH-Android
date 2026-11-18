@@ -29,7 +29,7 @@ class MainActivity : ComponentActivity(), VolumeKeyHost {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        hideStatusBar()
+        hideSystemBars()
 
         val app = application as DshApplication
 
@@ -66,16 +66,21 @@ class MainActivity : ComponentActivity(), VolumeKeyHost {
      */
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
-        if (hasFocus) hideStatusBar()
+        if (hasFocus) hideSystemBars()
     }
 
-    private fun hideStatusBar() {
+    private fun hideSystemBars() {
         val controller = WindowCompat.getInsetsController(window, window.decorView)
         controller.systemBarsBehavior =
             WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-        // Only the status bar: the navigation bar carries the gesture handle the
-        // user still needs to leave the app.
-        controller.hide(WindowInsetsCompat.Type.statusBars())
+        // Both bars. The harness draws its own sidebar toggle in the top-left
+        // corner, which the status bar otherwise covers, and its composer sits at
+        // the bottom edge, where the gesture pill overlaps the send button. The
+        // page fills the window, so neither bar can be worked around from the
+        // page side. A swipe still reveals them transiently.
+        controller.hide(
+            WindowInsetsCompat.Type.statusBars() or WindowInsetsCompat.Type.navigationBars(),
+        )
     }
 
     /**
