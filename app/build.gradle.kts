@@ -8,7 +8,11 @@ android {
     compileSdk = 37
 
     defaultConfig {
-        applicationId = "com.dshapp"
+        // The plugin-free build installs alongside the full one, so it needs
+        // its own identity: a different applicationId and a different signing
+        // key (keystore/dsh-oov.jks). Both must differ or the two builds would
+        // fight over one install slot and one runtime directory.
+        applicationId = "com.dshapp.oov"
         minSdk = 26
         // Android 10+ blocks exec() of app-private files for targetSdk >= 29.
         // PRoot must execute binaries from app storage, so the target stays at 28.
@@ -48,23 +52,27 @@ android {
     // The password is public because the key protects nothing: it exists so
     // consecutive local builds, not to authenticate a publisher. There is no
     // Play Store listing and no secret to defend.
+    //
+    // This branch ships the plugin-free build under its own package name and
+    // its own key, so it can be installed next to the full build instead of
+    // replacing it.
     signingConfigs {
-        create("stable") {
-            storeFile = rootProject.file("keystore/dsh.jks")
-            storePassword = "dshandroid"
-            keyAlias = "dsh"
-            keyPassword = "dshandroid"
+        create("oov") {
+            storeFile = rootProject.file("keystore/dsh-oov.jks")
+            storePassword = "dshandroid-oov"
+            keyAlias = "dsh-oov"
+            keyPassword = "dshandroid-oov"
         }
     }
 
     buildTypes {
         debug {
             isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("stable")
+            signingConfig = signingConfigs.getByName("oov")
         }
         release {
             isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("stable")
+            signingConfig = signingConfigs.getByName("oov")
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
     }

@@ -54,7 +54,16 @@ class DshRuntime(
 
     @Volatile private var serverProcess: Process? = null
 
-    val port: Int = 3080
+    /**
+     * Loopback port `dsh web` binds.
+     *
+     * Android gives every app the same network namespace, so two builds
+     * installed side by side would fight over one port: whichever started
+     * second would find it taken and fail. Each package therefore gets its own
+     * port. The full build keeps 3080 (every existing script and bookmark
+     * points there); the plugin-free build moves one up.
+     */
+    val port: Int = PORT_BY_PACKAGE[context.packageName] ?: DEFAULT_PORT
     val localUrl: String get() = "http://127.0.0.1:$port"
 
     fun log(stream: LogLine.LogStream, text: String) {
@@ -336,6 +345,14 @@ class DshRuntime(
         // Point at the bundled loader so PRoot does not have to write one into
         // PROOT_TMP_DIR on every exec (and cannot fail if that dir is noexec).
         "PROOT_LOADER" to paths.prootLoader.absolutePath,
+        // The bundled PRoot was built for the Termux prefix and carries
+        // /data/data/com.termux/files/usr in DT_RUNPATH. Rewriting that string
+        // in place only works while the replacement is the same length, which
+        // is why the full build uses a 10-character package name. This build's
+        // package name is longer, so the baked-in path cannot be reached;
+        // LD_LIBRARY_PATH is searched before DT_RUNPATH and supplies the real
+        // location of the bundled libraries instead.
+        "LD_LIBRARY_PATH" to "${paths.prefix.absolutePath}/lib",
         // Guest-relative, not host-relative: /root is bound to files/home.
         "HOME" to "/root",
         "TERM" to "xterm-256color",
@@ -473,6 +490,20 @@ class DshRuntime(
 
     companion object {
         private const val MAX_LOG_LINES = 2000
+
+        /** Port for any package that is not listed below. */
+        private const val DEFAULT_PORT = 3080
+
+        /**
+         * One port per package, so two installs can serve at the same time.
+         *
+         * Keep `com.dshapp` on 3080: the release notes, the probe scripts and
+         * anything the user has bookmarked refer to it.
+         */
+        private val PORT_BY_PACKAGE = mapOf(
+            "com.dshapp" to 3080,
+            "com.dshapp.oov" to 3081,
+        )
     }
 }
 
