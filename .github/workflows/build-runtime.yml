@@ -14,12 +14,23 @@ on:
         required: false
         default: "0.2.2-rc.3"
   push:
-    branches: [main]
+    # OOV is the plugin-free build: a stock DeepSeekRuntime with no community
+    # plugins bundled, kept as a clean baseline next to the feature branch.
+    # The whole app is watched, not just the payload scripts, because this
+    # branch exists to publish installable builds.
+    branches: [main, OOV]
     paths:
-      - "scripts/build-rootfs.sh"
-      - "scripts/patch-proot-prefix.sh"
-      - "scripts/smoke-rootfs.sh"
+      - "app/**"
+      - "scripts/**"
+      - "gradle/**"
+      - "*.gradle.kts"
       - ".github/workflows/build-runtime.yml"
+
+# A push can land while a payload is still building; the newer commit wins and
+# the older run is cancelled rather than burning an ARM64 runner for two hours.
+concurrency:
+  group: build-runtime-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
