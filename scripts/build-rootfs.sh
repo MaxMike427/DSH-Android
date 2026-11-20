@@ -167,31 +167,37 @@ sudo chroot "$ROOTFS" /usr/bin/env -i \
     # (`settingsNamespace("at-file")` evaluates to "at-file") and that call is its
     # single use, so the call is replaced with the value it produces. Patching the
     # installed file keeps every other consumer on the real dsh-settings.
+    #
+    # Node is used rather than python3 because the Ubuntu Base image ships no
+    # python at all; node is guaranteed here since the plugin loop above needs it.
     at_file=/root/.dsh/profiles/web/node_modules/dsh-at-file/lib/index.js
     if [ -f "$at_file" ]; then
-      python3 - "$at_file" <<'"'"'PY'"'"'
-import pathlib, sys
-path = pathlib.Path(sys.argv[1])
-text = path.read_text(encoding="utf-8")
-import_line = "import { settingsNamespace } from \"@deepseek-ai/dsh-settings\";"
-if import_line in text:
-    # Write through a sibling and replace: the installed file is a pnpm hard
-    # link, and rewriting it in place would also rewrite the store entry.
-    staged = path.with_suffix(".patched")
-    staged.write_text(
-        text.replace(import_line, "").replace("settingsNamespace(\"at-file\")", "\"at-file\""),
-        encoding="utf-8",
-    )
-    staged.replace(path)
-    print("  dsh-at-file patched", file=sys.stderr)
-else:
-    print("  dsh-at-file needs no patch", file=sys.stderr)
-PY
+      node - "$at_file" <<'"'"'NODE'"'"'
+const fs = require("node:fs")
+const file = process.argv[2]
+const importLine = "import { settingsNamespace } from \"@deepseek-ai/dsh-settings\";"
+const text = fs.readFileSync(file, "utf8")
+if (text.includes(importLine)) {
+  // Write through a sibling and rename: the installed file is a pnpm hard link,
+  // and rewriting it in place would also rewrite the content-addressable store.
+  const staged = file + ".patched"
+  const marker = "settingsNamespace(\"at-file\")"
+  fs.writeFileSync(
+    staged,
+    text.split(importLine).join("").split(marker).join("\"at-file\""),
+    "utf8",
+  )
+  fs.renameSync(staged, file)
+  console.error("  dsh-at-file patched")
+} else {
+  console.error("  dsh-at-file needs no patch")
+}
+NODE
     fi
 
     rm -rf /root/.npm /root/.cache
     printf "  bundles: " >&2
-    python3 -c "import json;print(json.load(open(\"/root/.dsh/profiles/web/package.json\"))[\"dsh\"][\"profile\"][\"bundles\"])" >&2'
+    node -e '"'"'const fs=require("node:fs");const m=JSON.parse(fs.readFileSync("/root/.dsh/profiles/web/package.json","utf8"));console.log(m.dsh.profile.bundles.join(", "))'"'"' >&2'
 
 log "install PRoot profile patch"
 # PRoot cannot satisfy dsh-sandbox-local (no bwrap/Landlock), and that provider
