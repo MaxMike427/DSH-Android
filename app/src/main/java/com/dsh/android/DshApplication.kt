@@ -4,14 +4,20 @@ import android.app.Application
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.os.Build
+import com.dsh.android.pet.PetForeground
 import com.dsh.android.runtime.DshRuntime
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 
 class DshApplication : Application() {
 
     lateinit var runtime: DshRuntime
+        private set
+
+    /** Keeps the floating pet in step with the runtime and this app's visibility. */
+    lateinit var petForeground: PetForeground
         private set
 
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -20,6 +26,13 @@ class DshApplication : Application() {
         super.onCreate()
         runtime = DshRuntime(this, appScope)
         createNotificationChannel()
+
+        petForeground = PetForeground.install(this)
+        // State changes drive the overlay: it may only exist while `dsh web`
+        // is up, and it must go away the moment the runtime stops.
+        appScope.launch {
+            runtime.state.collect { petForeground.onRuntimeState(it) }
+        }
     }
 
     private fun createNotificationChannel() {

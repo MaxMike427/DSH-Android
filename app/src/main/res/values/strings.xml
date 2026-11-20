@@ -5,4 +5,10 @@
     <string name="notification_channel_description">Keeps the local DeepSeekRuntime server running</string>
     <string name="notification_title">DeepSeekRuntime running</string>
     <string name="notification_stop">Stop</string>
+    <string name="pet_notification_text">Desktop pet floating over other apps</string>
+    <string name="pet_notification_hide">Hide pet</string>
+    <string name="pet_float_title">Desktop pet</string>
+    <string name="pet_float_summary">Show the pet in a floating window while the app is in the background</string>
+    <string name="pet_float_grant">Allow floating window</string>
+    <string name="pet_float_granted">Floating window allowed</string>
 </resources>

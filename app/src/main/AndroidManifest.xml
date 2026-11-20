@@ -9,6 +9,12 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
+    <!-- The desktop pet floats over other apps while this one is backgrounded.
+         A system alert window is the only API for that; it is granted by the
+         user in Settings, not by a runtime dialog. -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+
     <!-- Shared storage.
          targetSdk is 28 (PRoot needs exec() from app storage), so the app runs
          under the legacy storage model: the runtime READ/WRITE permissions are
@@ -63,6 +69,17 @@
             android:name=".service.RuntimeService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+
+        <!-- Hosts the floating desktop pet. Separate from RuntimeService so the
+             runtime keeps its own notification when the pet is switched off. -->
+        <service
+            android:name=".pet.PetOverlayService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="floating desktop pet overlay" />
+        </service>
 
         <provider
             android:name="androidx.core.content.FileProvider"

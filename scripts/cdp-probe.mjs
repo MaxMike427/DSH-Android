@@ -120,7 +120,13 @@ const layoutExpression = evaluateOnly || `(() => {
   })
 })()`
 
-const layout = await send('Runtime.evaluate', { expression: layoutExpression, returnByValue: true })
+const layout = await send('Runtime.evaluate', {
+  expression: layoutExpression,
+  returnByValue: true,
+  // The injected probes sometimes return a promise (fetch to the pet API); the
+  // script must wait for it or the value comes back as an empty object.
+  awaitPromise: true,
+})
 console.log('layout:', layout.result?.value, layout.exceptionDetails ? JSON.stringify(layout.exceptionDetails) : '')
 
 if (shotPath) {

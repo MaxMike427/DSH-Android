@@ -124,6 +124,75 @@ sudo chroot "$ROOTFS" /usr/bin/env -i \
     rm -rf /root/.npm /root/.cache
     ls -la /root/.dsh/profiles/web 2>/dev/null || true'
 
+# ---------------------------------------------------------------- plugins ----
+# `dsh plugin --profile web add <pkg>` forwards to pnpm inside the profile and
+# appends the package to `dsh.profile.bundles`, which is what makes the harness
+# load it. Doing it at build time means the shipped image already carries the
+# plugins: the first launch does not reach the registry and the user does not wait
+# for a download.
+#
+# A plugin written against a different harness API breaks boot, so the smoke test
+# checks the boot log for activation failures.
+log "install profile plugins"
+sudo chroot "$ROOTFS" /usr/bin/env -i \
+  HOME=/root PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+  TERM=dumb LANG=C.UTF-8 CI=1 \
+  bash -lc 'set -e
+    export NVM_DIR=/root/.nvm
+    . "$NVM_DIR/nvm.sh"
+    cd /root
+
+    # Required set: any failure aborts the build.
+    for spec in dsh-pet dshmarket dsh-context dsh-token-diet billion-context \
+                @liustack/modlens dsh-at-file dsh-genui dsh-soul-md; do
+      printf "  plugin: %s\n" "$spec" >&2
+      dsh plugin --profile web add "$spec" >/tmp/plugin.log 2>&1 || {
+        tail -20 /tmp/plugin.log >&2
+        echo "plugin install failed: $spec" >&2
+        exit 1
+      }
+    done
+
+    # Pinned to a GitHub tarball rather than the registry: a fetch failure is
+    # environmental, so it is reported and skipped instead of failing the image.
+    spec="dsh-speak-up@https://github.com/Yuuyuko-uu/dsh-speak-up/tarball/main"
+    printf "  plugin (optional): %s\n" "$spec" >&2
+    dsh plugin --profile web add "$spec" >/tmp/plugin.log 2>&1 || {
+      echo "  optional plugin skipped: $spec" >&2
+      tail -5 /tmp/plugin.log >&2
+    }
+
+    # `dsh-at-file` 0.6.3 imports `settingsNamespace` from dsh-settings, which this
+    # harness release does not export. The helper only brands a plain string
+    # (`settingsNamespace("at-file")` evaluates to "at-file") and that call is its
+    # single use, so the call is replaced with the value it produces. Patching the
+    # installed file keeps every other consumer on the real dsh-settings.
+    at_file=/root/.dsh/profiles/web/node_modules/dsh-at-file/lib/index.js
+    if [ -f "$at_file" ]; then
+      python3 - "$at_file" <<'"'"'PY'"'"'
+import pathlib, sys
+path = pathlib.Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+import_line = "import { settingsNamespace } from \"@deepseek-ai/dsh-settings\";"
+if import_line in text:
+    # Write through a sibling and replace: the installed file is a pnpm hard
+    # link, and rewriting it in place would also rewrite the store entry.
+    staged = path.with_suffix(".patched")
+    staged.write_text(
+        text.replace(import_line, "").replace("settingsNamespace(\"at-file\")", "\"at-file\""),
+        encoding="utf-8",
+    )
+    staged.replace(path)
+    print("  dsh-at-file patched", file=sys.stderr)
+else:
+    print("  dsh-at-file needs no patch", file=sys.stderr)
+PY
+    fi
+
+    rm -rf /root/.npm /root/.cache
+    printf "  bundles: " >&2
+    python3 -c "import json;print(json.load(open(\"/root/.dsh/profiles/web/package.json\"))[\"dsh\"][\"profile\"][\"bundles\"])" >&2'
+
 log "install PRoot profile patch"
 # PRoot cannot satisfy dsh-sandbox-local (no bwrap/Landlock), and that provider
 # fails closed. The profile layer swaps the sandboxed bash executor for the

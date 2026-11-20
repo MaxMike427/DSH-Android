@@ -33,6 +33,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
@@ -61,8 +62,12 @@ import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.view.KeyEvent
+import com.dsh.android.DshApplication
+import com.dsh.android.R
 import com.dsh.android.runtime.LogLine
 import com.dsh.android.runtime.RuntimeState
+import com.dsh.android.pet.PetOverlayService
+import com.dsh.android.pet.PetPreferences
 import com.dsh.android.storage.StorageAccessCard
 
 /** Which overlay the volume keys opened, if any. */
@@ -367,6 +372,24 @@ private fun ControlsPanel(
     onStop: () -> Unit,
     onOpenBrowser: () -> Unit,
 ) {
+    val context = LocalContext.current
+    val prefs = remember { PetPreferences.of(context) }
+    var floatEnabled by remember { mutableStateOf(prefs.floatEnabled) }
+    var overlayGranted by remember { mutableStateOf(PetOverlayService.canDraw(context)) }
+
+    // The grant happens in system Settings, so the switch reflects whatever the
+    // user did there when the app comes back rather than assuming success.
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                overlayGranted = PetOverlayService.canDraw(context)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -376,6 +399,53 @@ private fun ControlsPanel(
         Button(onClick = onTerminal, modifier = Modifier.fillMaxWidth()) { Text("Open terminal") }
         Button(onClick = onOpenBrowser, modifier = Modifier.fillMaxWidth()) { Text("Open in browser") }
         Button(onClick = onLogs, modifier = Modifier.fillMaxWidth()) { Text("Show logs") }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(context.getString(R.string.pet_float_title), fontWeight = FontWeight.Medium)
+                Text(
+                    context.getString(R.string.pet_float_summary),
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f),
+                )
+            }
+            Switch(
+                checked = floatEnabled && overlayGranted,
+                onCheckedChange = { enabled ->
+                    if (!enabled) {
+                        floatEnabled = false
+                        prefs.floatEnabled = false
+                        PetOverlayService.hide(context)
+                    } else if (PetOverlayService.canDraw(context)) {
+                        floatEnabled = true
+                        prefs.floatEnabled = true
+                        (context.applicationContext as DshApplication).petForeground.sync()
+                    } else {
+                        // Not granted yet: send the user to the toggle, then
+                        // pick the answer up on the way back.
+                        overlayGranted = false
+                        val intent = android.content.Intent(
+                            android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                            android.net.Uri.parse("package:${context.packageName}"),
+                        ).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                        runCatching { context.startActivity(intent) }
+                    }
+                },
+            )
+        }
+        if (!overlayGranted) {
+            Text(
+                context.getString(R.string.pet_float_grant),
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.primary,
+            )
+        }
+
+        Spacer(Modifier.height(4.dp))
         TextButton(onClick = onStop, modifier = Modifier.fillMaxWidth()) { Text("Stop runtime") }
         Spacer(Modifier.height(4.dp))
         Text(
