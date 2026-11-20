@@ -143,8 +143,18 @@ sudo chroot "$ROOTFS" /usr/bin/env -i \
     cd /root
 
     # Required set: any failure aborts the build.
+    #
+    # `dsh-at-file` 0.6.3 is deliberately absent. It is written against harness
+    # APIs this release does not have, and no published release does either (the
+    # same gaps are present in 0.2.2-rc.5, the newest tag): it imports
+    # `settingsNamespace` from dsh-settings, calls `ctx.settings.register(...)` for
+    # a handle this SettingsForms only exposes configure()/describe() for, and its
+    # typert manifest uses codecs the registry here rejects with "strict codec has
+    # no create() factory". Shimming the first two only moved the failure along to
+    # the third, so the plugin is left out rather than shipped in a state where it
+    # cannot activate.
     for spec in dsh-pet dshmarket dsh-context dsh-token-diet billion-context \
-                @liustack/modlens dsh-at-file dsh-genui dsh-soul-md; do
+                @liustack/modlens dsh-genui dsh-soul-md; do
       printf "  plugin: %s\n" "$spec" >&2
       dsh plugin --profile web add "$spec" >/tmp/plugin.log 2>&1 || {
         tail -20 /tmp/plugin.log >&2
@@ -162,41 +172,9 @@ sudo chroot "$ROOTFS" /usr/bin/env -i \
       tail -5 /tmp/plugin.log >&2
     }
 
-    # `dsh-at-file` 0.6.3 imports `settingsNamespace` from dsh-settings, which this
-    # harness release does not export. The helper only brands a plain string
-    # (`settingsNamespace("at-file")` evaluates to "at-file") and that call is its
-    # single use, so the call is replaced with the value it produces. Patching the
-    # installed file keeps every other consumer on the real dsh-settings.
-    #
-    # Node is used rather than python3 because the Ubuntu Base image ships no
-    # python at all; node is guaranteed here since the plugin loop above needs it.
-    at_file=/root/.dsh/profiles/web/node_modules/dsh-at-file/lib/index.js
-    if [ -f "$at_file" ]; then
-      node - "$at_file" <<'"'"'NODE'"'"'
-const fs = require("node:fs")
-const file = process.argv[2]
-const importLine = "import { settingsNamespace } from \"@deepseek-ai/dsh-settings\";"
-const text = fs.readFileSync(file, "utf8")
-if (text.includes(importLine)) {
-  // Write through a sibling and rename: the installed file is a pnpm hard link,
-  // and rewriting it in place would also rewrite the content-addressable store.
-  const staged = file + ".patched"
-  const marker = "settingsNamespace(\"at-file\")"
-  fs.writeFileSync(
-    staged,
-    text.split(importLine).join("").split(marker).join("\"at-file\""),
-    "utf8",
-  )
-  fs.renameSync(staged, file)
-  console.error("  dsh-at-file patched")
-} else {
-  console.error("  dsh-at-file needs no patch")
-}
-NODE
-    fi
-
     rm -rf /root/.npm /root/.cache
     printf "  bundles: " >&2
+    # Node rather than python3: the Ubuntu Base image ships no python at all.
     node -e '"'"'const fs=require("node:fs");const m=JSON.parse(fs.readFileSync("/root/.dsh/profiles/web/package.json","utf8"));console.log(m.dsh.profile.bundles.join(", "))'"'"' >&2'
 
 log "install PRoot profile patch"
