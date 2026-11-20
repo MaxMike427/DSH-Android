@@ -74,30 +74,120 @@ class DshRuntime(
 
     suspend fun refreshState() = withContext(Dispatchers.IO) {
         paths.ensureDirectories()
+        // A payload that changed under an existing tree is not "installed": the
+        // runtime directories are there but they belong to the previous APK, so
+        // report NotInstalled and let install() replace them.
+        val stale = paths.isInstalled() && paths.payloadStamp() != expectedStamp()
+        if (stale) {
+            log(LogLine.LogStream.SYSTEM, "runtime: the bundled payload differs from the extracted tree")
+        }
         _state.value = when {
-            !paths.isInstalled() -> RuntimeState.NotInstalled
+            !paths.isInstalled() || stale -> RuntimeState.NotInstalled
             serverProcess?.isAlive == true ->
                 RuntimeState.Running(readTokenUrl() ?: localUrl, processId(serverProcess))
             else -> RuntimeState.Stopped(null)
         }
     }
 
+    /**
+     * Stamp of the payload this APK ships.
+     *
+     * The manifest embeds the archive sizes and hashes, so its hash changes
+     * exactly when the image does; the constant is for layout changes that keep
+     * the same archives. Both together decide whether an extracted tree is still
+     * the one this build expects.
+     */
+    private fun expectedStamp(): String = runCatching {
+        context.assets.open("runtime-manifest.json").bufferedReader().use { reader ->
+            "installed:${reader.readText().hashCode()}:${BuildConfigPayload.VERSION}"
+        }
+    }.getOrElse {
+        // A build without the payload asset is broken anyway; returning an empty
+        // stamp lets install() fail later with the extraction error instead of
+        // taking down state refresh on launch.
+        ""
+    }
+
+    /**
+     * Guest state that belongs to the user, not to the image.
+     *
+     * The harness keeps sessions, stored credentials and plugin data under
+     * `/root/.dsh` (the profile bundles are separate, under `.dsh/profiles`, and
+     * are image-owned). A payload swap has to survive those, so they are moved
+     * out before the old rootfs is deleted and put back once extraction lands.
+     */
+    private fun stashGuestData() {
+        val dsh = File(paths.rootfs, "root/.dsh")
+        if (!dsh.isDirectory) return
+        val stash = File(paths.state, "upgrade/.dsh")
+        stash.parentFile?.deleteRecursively()
+        stash.parentFile?.mkdirs()
+        if (!dsh.renameTo(stash)) {
+            // Different volumes are not a case here, but a failed move must not
+            // silently drop user data, so fall back to a copy.
+            dsh.copyRecursively(stash, overwrite = true)
+        }
+        // Profiles are rebuilt from the image; only keep what the user owns.
+        File(stash, "profiles").deleteRecursively()
+        log(LogLine.LogStream.SYSTEM, "install: kept guest data for the upgrade")
+    }
+
+    private fun restoreGuestData() {
+        val stash = File(paths.state, "upgrade/.dsh")
+        if (!stash.isDirectory) return
+        val dsh = File(paths.rootfs, "root/.dsh")
+        dsh.mkdirs()
+        stash.listFiles()?.forEach { entry ->
+            val target = File(dsh, entry.name)
+            target.deleteRecursively()
+            if (!entry.renameTo(target)) entry.copyRecursively(target, overwrite = true)
+        }
+        stash.parentFile?.deleteRecursively()
+        log(LogLine.LogStream.SYSTEM, "install: restored guest data")
+    }
+
     /** Extract the bundled payload. Safe to call repeatedly; resumes from the marker. */
     suspend fun install(onProgress: (Float, String) -> Unit = { _, _ -> }) = withContext(Dispatchers.IO) {
         paths.ensureDirectories()
-        if (paths.isInstalled()) {
+
+        // The stamp describes the payload, not the app build: the manifest holds
+        // the archive hashes, so a new APK carries a new stamp. Without this
+        // check an upgrade finds the marker and stops, leaving the previous image
+        // in place — which silently keeps removed plugins (and their failures)
+        // alive on every device that updates instead of reinstalling.
+        val stamp = expectedStamp()
+        val upgrading = paths.isInstalled()
+        if (upgrading && paths.payloadStamp() == stamp) {
             _state.value = RuntimeState.Stopped(null)
             return@withContext
         }
 
         try {
-            _state.value = RuntimeState.Installing("Preparing storage", 0f)
-            log(LogLine.LogStream.SYSTEM, "install: begin")
+            _state.value = RuntimeState.Installing(
+                if (upgrading) "Replacing the runtime" else "Preparing storage",
+                0f,
+            )
+            log(
+                LogLine.LogStream.SYSTEM,
+                if (upgrading) {
+                    "install: payload changed, re-extracting over the old runtime"
+                } else {
+                    "install: begin"
+                },
+            )
 
             val assets = context.assets
-            val manifest = assets.open("runtime-manifest.json").bufferedReader().use { it.readText() }
-            val stamp = "installed:${manifest.hashCode()}:${BuildConfigPayload.VERSION}"
             log(LogLine.LogStream.SYSTEM, "install: manifest ok")
+
+            if (upgrading) {
+                // The new image owns every file under rootfs, and extracting over
+                // the old tree would leave anything the new payload dropped in
+                // place — a removed plugin keeps loading from its stale directory.
+                // Guest /root is image-owned except for the harness data directory,
+                // which is moved aside and restored so sessions survive.
+                stashGuestData()
+                paths.rootfs.deleteRecursively()
+            }
 
             val prootBytes = assets.openFd("proot.tar.xz").use { it.length }
             val rootfsBytes = assets.openFd("rootfs.tar.xz").use { it.length }
@@ -158,9 +248,9 @@ class DshRuntime(
             }
 
             paths.installMarker.writeText(stamp)
+            restoreGuestData()
             applyMirror()
             log(LogLine.LogStream.SYSTEM, "install: complete")
-
             _state.value = RuntimeState.Stopped(null)
         } catch (t: Throwable) {
             log(LogLine.LogStream.SYSTEM, "install failed: ${t.stackTraceToString()}")
