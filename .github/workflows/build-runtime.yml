@@ -14,12 +14,22 @@ on:
         required: false
         default: "0.2.2-rc.3"
   push:
-    branches: [main]
+    # Watch the whole app, not just the payload scripts: most fixes land in
+    # Kotlin (runtime, overlay, UI), and a run that skips them means the release
+    # silently keeps shipping the previous behaviour.
+    branches: [main, OOV]
     paths:
-      - "scripts/build-rootfs.sh"
-      - "scripts/patch-proot-prefix.sh"
-      - "scripts/smoke-rootfs.sh"
+      - "app/**"
+      - "scripts/**"
+      - "gradle/**"
+      - "*.gradle.kts"
       - ".github/workflows/build-runtime.yml"
+
+# A push can land while a payload is still building; the newer commit wins and
+# the older run is cancelled rather than burning an ARM64 runner for two hours.
+concurrency:
+  group: build-runtime-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
