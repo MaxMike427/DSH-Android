@@ -1,257 +1,197 @@
 package com.dsh.android.pet
 
 /**
- * Turns the harness page into the desktop pet, and keeps it interactive.
+ * Isolates the real plugin without taking over its layout, menu or physics.
  *
- * ## What it does
- *
- * The pet is one element, `.dsh-pet-root`, nested inside the app shell:
- *
- * ```
- * body > div#root > div > div.frame > div.overlayLayer > div > div.dsh-pet-root
- * ```
- *
- * Everything else on the page is chrome the floating window must not show. The
- * script works outwards from the pet instead of inwards from the body: for every
- * ancestor it hides the siblings, clears the background and pins the box to the
- * viewport, so the only thing that can paint is the pet.
- *
- * ## Why the hit box, not the root
- *
- * The root is the whole animation stage (462x260 at its default size), but the
- * character only occupies `.dsh-pet-hit` — measured at 78x93 CSS px. Sizing the
- * window to the root would block 6x more of the screen than the pet covers, and
- * every one of those pixels would steal touches from the app underneath. The
- * root is therefore offset so the hit box sits exactly at the window origin, and
- * the host is told that size so it can size the window to match.
- *
- * Nothing here touches `pointer-events`: the plugin already sets
- * `pointer-events: none` on the root and `auto` on `.dsh-pet-hit`, which is
- * exactly the split needed for a pet that is clickable while its transparent
- * surroundings are not.
- *
- * ## Why it is a resident script
- *
- * The plugin re-renders: it remounts on state changes and swaps nodes as the
- * video changes. A one-shot pass would be undone by the first re-render, so the
- * rules are installed once and re-applied from a `MutationObserver`. All of it is
- * idempotent and guarded by a window flag, so both injection points
- * (`onPageStarted`, `onPageFinished`) can call it.
+ * The WebView keeps a screen-sized viewport. Only the Android window is cropped
+ * to the visible pet. Previously both the host and plugin moved the character,
+ * and plugin style writes displaced it outside a tiny viewport after a drag.
  */
 internal val PET_ONLY_SCRIPT: String = """
-(function () {
-  var HOST = window.DshPetHost || null;
-  var PET = '.dsh-pet-root';
-  var HIT = '.dsh-pet-hit';
+(function installPetOverlay() {
+  if (!document.documentElement) {
+    setTimeout(installPetOverlay, 25);
+    return;
+  }
+  if (window.__dshPetOnly && window.__dshPetOnly.version === 2) {
+    window.__dshPetOnly.refresh();
+    return;
+  }
+  var host = window.DshPetHost;
+  if (!host) return;
+  var keep = '.dsh-pet-root,.dsh-pet-menu,.dsh-pet-chat,.dsh-pet-score,' +
+    '.dsh-pet-score-burst,[data-shortcut-modal]';
+  var panels = '.dsh-pet-menu-column,.dsh-pet-chat,.dsh-pet-todo,' +
+    '.dsh-pet-score,[data-shortcut-modal]';
+  var pending = false;
+  var structureChanged = true;
+  var lastFrame = '';
+  var openedAt = 0;
+  var wasOpen = false;
+  var nativeMotion = false;
+  var api = { version: 2, refresh: schedule, motionSamples: 0 };
+  window.__dshPetOnly = api;
 
-  // The plugin positions the pet itself (roaming, dragging, throwing). Those
-  // writes are inline styles without !important, and every rule below is
-  // !important, so the pet stays where the host wants it while still running
-  // its own animation and click handling.
-  var offsetX = 0;
-  var offsetY = 0;
-  var natural = null;      // { dx, dy, w, h } — measured once, before scaling
-  var fixedScale = null;   // width-fitted scale, fixed so a resize keeps the size
-  // Viewport width at the moment `natural` was measured. The plugin sizes the
-  // pet from the viewport, so the two must come from the same layout pass or the
-  // scale is derived from mismatched numbers (capturing this at script load was
-  // wrong: the first pass can run before the page has laid out).
-  var referenceWidth = 0;
-  var reported = false;
-
-  function ensureStyle() {
+  function installStyle() {
     if (document.getElementById('dsh-pet-only-style')) return;
     var style = document.createElement('style');
     style.id = 'dsh-pet-only-style';
-    // A WebView only shows what it paints, so the page has to be transparent or
-    // the overlay would be a dark rectangle over the app behind it.
     style.textContent =
       'html,body{background:transparent!important;overflow:hidden!important}' +
-      'body::before,body::after{display:none!important}';
+      'body::before,body::after{display:none!important}' +
+      '[data-pet-host-hidden]{display:none!important}' +
+      '[data-pet-host-path]{background:transparent!important;box-shadow:none!important;' +
+      'border:0!important;backdrop-filter:none!important;position:fixed!important;' +
+      'inset:0!important;width:auto!important;height:auto!important;transform:none!important;' +
+      'overflow:visible!important;pointer-events:none!important}';
     (document.head || document.documentElement).appendChild(style);
   }
 
-  function hideSiblings(node) {
-    var parent = node.parentElement;
-    if (!parent) return;
-    for (var i = 0; i < parent.children.length; i++) {
-      var child = parent.children[i];
-      if (child === node) continue;
-      if (child.tagName === 'SCRIPT' || child.tagName === 'STYLE') continue;
-      if (child.style.display !== 'none') child.style.display = 'none';
-    }
+  function related(el) {
+    return el.matches(keep) || !!el.querySelector(keep);
   }
 
-  function clearBox(el) {
-    var s = el.style;
-    s.setProperty('background', 'transparent', 'important');
-    s.setProperty('background-color', 'transparent', 'important');
-    s.setProperty('box-shadow', 'none', 'important');
-    s.setProperty('border', '0', 'important');
-    s.setProperty('backdrop-filter', 'none', 'important');
+  function isolate() {
+    installStyle();
+    var pets = document.querySelectorAll('.dsh-pet-root');
+    if (!pets.length) return;
+    // Preserve body portals as well as the pet's ancestors. Hiding every sibling
+    // used to hide .dsh-pet-menu itself, which lost the complete native menu.
+    Array.prototype.forEach.call(document.querySelectorAll(keep), function (leaf) {
+      leaf.removeAttribute('data-pet-host-hidden');
+      var node = leaf;
+      while (node && node !== document.body) {
+        var parent = node.parentElement;
+        if (!parent) break;
+        node.removeAttribute('data-pet-host-hidden');
+        Array.prototype.forEach.call(parent.children, function (child) {
+          if (child.tagName === 'SCRIPT' || child.tagName === 'STYLE' || related(child)) {
+            child.removeAttribute('data-pet-host-hidden');
+          } else {
+            child.setAttribute('data-pet-host-hidden', '');
+          }
+        });
+        if (parent !== document.body && !parent.matches(keep)) {
+          parent.setAttribute('data-pet-host-path', '');
+        }
+        node = parent;
+      }
+    });
   }
 
-  /**
-   * Where the character sits inside its own stage, in CSS pixels.
-   *
-   * Measured from the rendered boxes rather than recomputed from the plugin's
-   * constants: the stage size is user-configurable, so the ratio is not fixed.
-   */
-  function measure(pet) {
-    var hit = pet.querySelector(HIT);
-    if (!hit) return null;
-    var rootBox = pet.getBoundingClientRect();
-    var hitBox = hit.getBoundingClientRect();
-    if (!(hitBox.width > 0) || !(hitBox.height > 0)) return null;
-    return {
-      dx: hitBox.left - rootBox.left,
-      dy: hitBox.top - rootBox.top,
-      w: hitBox.width,
-      h: hitBox.height
-    };
-  }
-
-  function apply() {
-    var pet = document.querySelector(PET);
-    if (!pet) return false;
-    ensureStyle();
-
-    // Walk outwards from the pet's parent, hiding every sibling and flattening
-    // each ancestor into a transparent, full-viewport box.
-    var node = pet.parentElement;
-    while (node && node !== document.body && node.parentElement) {
-      hideSiblings(node);
-      clearBox(node);
-      node.style.setProperty('position', 'fixed', 'important');
-      node.style.setProperty('inset', '0', 'important');
-      node.style.setProperty('width', 'auto', 'important');
-      node.style.setProperty('height', 'auto', 'important');
-      node.style.setProperty('transform', 'none', 'important');
-      node.style.setProperty('overflow', 'visible', 'important');
-      node.style.setProperty('pointer-events', 'none', 'important');
-      node = node.parentElement;
-    }
-
-    if (!natural) {
-      // Measure with any host scaling cleared: a previous pass's transform would
-      // otherwise be baked into the rect and the scale would come out as 1.
-      pet.style.setProperty('transform', 'none', 'important');
-      natural = measure(pet);
-      // Measured in the same pass as the box, so the ratio is consistent.
-      if (natural) referenceWidth = window.innerWidth;
-    }
-    // The plugin sizes the pet relative to the viewport, so `natural` describes
-    // the box at the width it was first measured at. The scale is derived once
-    // from that reference width and then reused: the host keeps the window at
-    // that width, so re-deriving from a later resize (a panel opening to full
-    // screen) would blow the pet up.
-    if (natural && !fixedScale && referenceWidth > 0 && natural.w > 0) {
-      fixedScale = referenceWidth / natural.w;
-    }
-
-    var s = pet.style;
-    s.setProperty('position', 'fixed', 'important');
-    s.setProperty('right', 'auto', 'important');
-    s.setProperty('bottom', 'auto', 'important');
-    s.setProperty('margin', '0', 'important');
-    s.setProperty('transform-origin', 'top left', 'important');
-    s.setProperty('transform', 'scale(' + (fixedScale || 1) + ')', 'important');
-    // Pin the character (not the stage) to the window origin. `offsetX/Y` is
-    // how the host keeps the pet still while it grows the window around it.
-    var scale = fixedScale || 1;
-    s.setProperty('left', (offsetX - (natural ? natural.dx * scale : 0)) + 'px', 'important');
-    s.setProperty('top', (offsetY - (natural ? natural.dy * scale : 0)) + 'px', 'important');
-
-    if (!reported && natural && HOST && HOST.onPetBox) {
-      reported = true;
-      try { HOST.onPetBox(natural.w, natural.h); } catch (e) { /* host gone */ }
+  function visible(el) {
+    var r = el.getBoundingClientRect();
+    if (r.width <= 0 || r.height <= 0) return false;
+    for (var node = el; node && node !== document.documentElement; node = node.parentElement) {
+      var style = getComputedStyle(node);
+      if (style.display === 'none' || style.visibility !== 'visible' || Number(style.opacity) === 0) return false;
     }
     return true;
   }
 
-  /** Panels the pet opens that need more room than the pet itself occupies. */
-  function panelOpen() {
-    return !!document.querySelector('.dsh-pet-menu');
+  function report() {
+    pending = false;
+    if (structureChanged) {
+      structureChanged = false;
+      isolate();
+    }
+    var open = Array.prototype.some.call(document.querySelectorAll(panels), visible);
+    if (open && !wasOpen) openedAt = Date.now();
+    wasOpen = open;
+    var boxes = Array.prototype.filter.call(
+      document.querySelectorAll('.dsh-pet-hit,.dsh-pet-bubble.is-on,.pet-tooltip.is-on'), visible
+    ).map(function (el) { return el.getBoundingClientRect(); });
+    var x = 0, y = 0, right = 0, bottom = 0;
+    if (boxes.length) {
+      x = Math.min.apply(null, boxes.map(function (r) { return r.left; }));
+      y = Math.min.apply(null, boxes.map(function (r) { return r.top; }));
+      right = Math.max.apply(null, boxes.map(function (r) { return r.right; }));
+      bottom = Math.max.apply(null, boxes.map(function (r) { return r.bottom; }));
+    }
+    var frame = [x, y, right - x, bottom - y, open];
+    // Quantise to device pixels; don't queue identical window updates for video
+    // swaps, blinking cursors and sub-pixel spring motion.
+    var dpr = window.devicePixelRatio || 1;
+    for (var i = 0; i < 4; i++) frame[i] = Math.round(frame[i] * dpr) / dpr;
+    var key = JSON.stringify(frame);
+    if (key !== lastFrame) {
+      lastFrame = key;
+      host.onFrame(frame[0], frame[1], frame[2], frame[3], open);
+    }
   }
 
-  var pending = false;
-  var lastPanel = false;
-
-  /**
-   * The plugin closes its menu from a capture-phase `mousedown` on the document.
-   * A touch user gets that `mousedown` synthesised from the very press that
-   * opened the menu, so the menu would flash and vanish. The menu is therefore
-   * treated as newly opened for a moment after it appears, and presses are
-   * swallowed during that window.
-   *
-   * After that, presses inside the menu still pass through the plugin untouched;
-   * only the ones that would close it on the same gesture are suppressed.
-   */
-  var menuOpenedAt = 0;
-  var MENU_GRACE_MS = 700;
-
-  function guardMenuPress() {
-    document.addEventListener('mousedown', function (e) {
-      if (!panelOpen()) return;
-      var menu = document.querySelector('.dsh-pet-menu');
-      if (Date.now() - menuOpenedAt < MENU_GRACE_MS) {
-        e.stopPropagation();
-        return;
-      }
-      if (menu && menu.contains(e.target)) {
-        e.stopPropagation();
-      }
-    }, true);
-  }
-
-  var observer = new MutationObserver(function () {
+  function schedule() {
     if (pending) return;
     pending = true;
-    requestAnimationFrame(function () {
-      pending = false;
-      apply();
-      var open = panelOpen();
-      if (open !== lastPanel) {
-        lastPanel = open;
-        if (open) menuOpenedAt = Date.now();
-        if (HOST && HOST.onPanel) {
-          try { HOST.onPanel(open); } catch (e) { /* host gone */ }
-        }
-      }
-    });
+    // A new window starts transparent until the first report. WebView can
+    // suspend rAF for that transparent surface, so use a coalesced timer which
+    // also runs before the first visible frame.
+    setTimeout(report, 16);
+  }
+
+  // Touch produces a compatibility mousedown after a long press. It must not
+  // immediately close the menu that the same press has just opened.
+  document.addEventListener('mousedown', function (event) {
+    if (!wasOpen || Date.now() - openedAt > 700) return;
+    if (event.target.closest('.dsh-pet-menu,.dsh-pet-chat,.dsh-pet-todo')) return;
+    event.stopImmediatePropagation();
+  }, true);
+
+  // Native menu branches use mouseenter. On touch, enter the branch explicitly;
+  // leaf clicks and all action handlers remain the plugin's own handlers.
+  document.addEventListener('pointerup', function (event) {
+    if (event.pointerType === 'mouse') return;
+    var branch = event.target.closest('.dsh-pet-menu-branch');
+    if (branch) branch.dispatchEvent(new MouseEvent('mouseenter', { view: window }));
+  }, true);
+
+  // Chromium may suppress hardware events when an Activity is backgrounded.
+  // The visible foreground overlay supplies the same W3C events from Android
+  // sensors, so the plugin's existing tiltGravity/shakeThrow switches still win.
+  ['deviceorientation', 'devicemotion'].forEach(function (type) {
+    window.addEventListener(type, function (event) {
+      if (nativeMotion && event.isTrusted) event.stopImmediatePropagation();
+    }, true);
   });
-
-  function start() {
-    ensureStyle();
-    apply();
-    guardMenuPress();
-    // childList+subtree only: the rules above are inline styles, and observing
-    // attributes would make this loop on its own writes.
-    observer.observe(document.documentElement, { childList: true, subtree: true });
-    window.addEventListener('resize', apply, { passive: true });
-    window.__dshPetOnly = {
-      apply: apply,
-      setOffset: function (x, y) {
-        offsetX = x || 0;
-        offsetY = y || 0;
-        apply();
+  function dispatchSensor(type, values) {
+    var event;
+    try {
+      if (type === 'deviceorientation' && typeof DeviceOrientationEvent !== 'undefined') {
+        event = new DeviceOrientationEvent(type, values);
+      } else if (type === 'devicemotion' && typeof DeviceMotionEvent !== 'undefined') {
+        event = new DeviceMotionEvent(type, values);
       }
-    };
+    } catch (e) { event = null; }
+    if (!event) event = new Event(type);
+    Object.keys(values).forEach(function (key) {
+      try { Object.defineProperty(event, key, { value: values[key], enumerable: true }); } catch (e) {}
+    });
+    window.dispatchEvent(event);
   }
+  api.receiveMotion = function (sample) {
+    nativeMotion = true;
+    api.motionSamples++;
+    if (sample.beta !== null) {
+      dispatchSensor('deviceorientation', {
+        alpha: sample.alpha, beta: sample.beta, gamma: sample.gamma, absolute: false
+      });
+    }
+    dispatchSensor('devicemotion', {
+      acceleration: sample.acceleration,
+      accelerationIncludingGravity: sample.gravity,
+      rotationRate: sample.rotationRate,
+      interval: sample.interval
+    });
+  };
 
-  if (!apply()) {
-    var tries = 0;
-    var timer = setInterval(function () {
-      tries += 1;
-      if (apply()) {
-        clearInterval(timer);
-        start();
-      } else if (tries > 600) {
-        clearInterval(timer);
-      }
-    }, 100);
-  } else {
-    start();
-  }
+  new MutationObserver(function (records) {
+    if (records.some(function (r) { return r.type === 'childList'; })) structureChanged = true;
+    schedule();
+  }).observe(document.documentElement, {
+    childList: true, subtree: true, attributes: true, attributeFilter: ['style', 'class', 'hidden']
+  });
+  window.addEventListener('resize', schedule, { passive: true });
+  window.addEventListener('load', function () { structureChanged = true; schedule(); }, { once: true });
+  schedule();
 })();
 """.trimIndent()
