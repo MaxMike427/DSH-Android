@@ -97,8 +97,8 @@ internal class PetMotionSensors(
             }
         }
         val now = SystemClock.elapsedRealtime()
-        if (busy || now - lastSent < 33 || !started || !registered) return
-        val interval = if (lastSent == 0L) 33L else now - lastSent
+        if (busy || now - lastSent < 16 || !started || !registered) return
+        val interval = if (lastSent == 0L) 20L else now - lastSent
         lastSent = now
         val sample = JSONObject().apply {
             // Android pitch has the opposite sign to DeviceOrientation.beta.
@@ -115,8 +115,8 @@ internal class PetMotionSensors(
             put("interval", interval)
         }
         busy = true
-        // Coalesce sensor callbacks while a JS evaluation is outstanding rather
-        // than queueing an unbounded stream behind a busy renderer.
+        // Keep one evaluation outstanding. The old 33ms gate discarded every
+        // other 20ms GAME-sensor sample, limiting reactions to roughly 25Hz.
         view.evaluateJavascript("window.__dshPetOnly?.receiveMotion($sample)") { busy = false }
     }
 

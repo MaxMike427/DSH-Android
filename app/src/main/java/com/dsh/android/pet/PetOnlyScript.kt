@@ -20,15 +20,16 @@ internal val PET_ONLY_SCRIPT: String = """
   var host = window.DshPetHost;
   if (!host) return;
   var keep = '.dsh-pet-root,.dsh-pet-menu,.dsh-pet-chat,.dsh-pet-score,' +
-    '.dsh-pet-score-burst,[data-shortcut-modal]';
+    '.dsh-pet-score-burst,[data-shortcut-modal="settings"]';
   var panels = '.dsh-pet-menu-column,.dsh-pet-chat,.dsh-pet-todo,' +
-    '.dsh-pet-score,[data-shortcut-modal]';
+    '.dsh-pet-score,[data-shortcut-modal="settings"]';
   var pending = false;
   var structureChanged = true;
   var lastFrame = '';
   var openedAt = 0;
   var wasOpen = false;
   var nativeMotion = false;
+  var touchMenuItem = null;
   var api = { version: 2, refresh: schedule, motionSamples: 0 };
   window.__dshPetOnly = api;
 
@@ -51,37 +52,40 @@ internal val PET_ONLY_SCRIPT: String = """
     return el.matches(keep) || !!el.querySelector(keep);
   }
 
+  function preserveBranch(node) {
+    node.removeAttribute('data-pet-host-hidden');
+    if (node.matches(keep)) return;
+    node.setAttribute('data-pet-host-path', '');
+    Array.prototype.forEach.call(node.children, function (child) {
+      if (child.tagName === 'SCRIPT' || child.tagName === 'STYLE') return;
+      if (related(child)) {
+        preserveBranch(child);
+      } else {
+        child.setAttribute('data-pet-host-hidden', '');
+      }
+    });
+  }
+
   function isolate() {
     installStyle();
     var pets = document.querySelectorAll('.dsh-pet-root');
     if (!pets.length) return;
-    // Preserve body portals as well as the pet's ancestors. Hiding every sibling
-    // used to hide .dsh-pet-menu itself, which lost the complete native menu.
-    Array.prototype.forEach.call(document.querySelectorAll(keep), function (leaf) {
-      leaf.removeAttribute('data-pet-host-hidden');
-      var node = leaf;
-      while (node && node !== document.body) {
-        var parent = node.parentElement;
-        if (!parent) break;
-        node.removeAttribute('data-pet-host-hidden');
-        Array.prototype.forEach.call(parent.children, function (child) {
-          if (child.tagName === 'SCRIPT' || child.tagName === 'STYLE' || related(child)) {
-            child.removeAttribute('data-pet-host-hidden');
-          } else {
-            child.setAttribute('data-pet-host-hidden', '');
-          }
-        });
-        if (parent !== document.body && !parent.matches(keep)) {
-          parent.setAttribute('data-pet-host-path', '');
-        }
-        node = parent;
+    // Preserve body portals as well as the pet's ancestor branch. A container
+    // can contain both the pet and the workspace, so preserving that container
+    // wholesale is not enough: recurse and hide every unrelated descendant.
+    Array.prototype.forEach.call(document.body.children, function (child) {
+      if (child.tagName === 'SCRIPT' || child.tagName === 'STYLE') return;
+      if (related(child)) {
+        preserveBranch(child);
+      } else {
+        child.setAttribute('data-pet-host-hidden', '');
       }
     });
   }
 
   function visible(el) {
     var r = el.getBoundingClientRect();
-    if (r.width <= 0 || r.height <= 0) return false;
+    if (r.width <= 0 || r.height <= 0 || getComputedStyle(el).visibility !== 'visible') return false;
     for (var node = el; node && node !== document.documentElement; node = node.parentElement) {
       var style = getComputedStyle(node);
       if (style.display === 'none' || style.visibility !== 'visible' || Number(style.opacity) === 0) return false;
@@ -123,10 +127,12 @@ internal val PET_ONLY_SCRIPT: String = """
   function schedule() {
     if (pending) return;
     pending = true;
-    // A new window starts transparent until the first report. WebView can
-    // suspend rAF for that transparent surface, so use a coalesced timer which
-    // also runs before the first visible frame.
-    setTimeout(report, 16);
+    // MutationObserver already runs at the end of the DOM task. Queue the crop
+    // in the next microtask instead of waiting another 16ms timer tick; that
+    // removes a whole display frame from finger-to-window latency. The first
+    // report also happens before the transparent surface can be suspended.
+    if (typeof queueMicrotask === 'function') queueMicrotask(report);
+    else setTimeout(report, 0);
   }
 
   // Touch produces a compatibility mousedown after a long press. It must not
@@ -139,10 +145,28 @@ internal val PET_ONLY_SCRIPT: String = """
 
   // Native menu branches use mouseenter. On touch, enter the branch explicitly;
   // leaf clicks and all action handlers remain the plugin's own handlers.
+  document.addEventListener('pointerdown', function (event) {
+    touchMenuItem = event.pointerType === 'mouse' ? null : event.target.closest('.dsh-pet-menu-item');
+  }, true);
+  document.addEventListener('click', function (event) {
+    var item = touchMenuItem;
+    touchMenuItem = null;
+    if (item && item.matches('.dsh-pet-menu-branch') && event.target.closest('.dsh-pet-menu')) {
+      // A touch used to expand a branch must not select an overlapping child
+      // after the browser re-hit-tests its compatibility click.
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    }
+  }, true);
   document.addEventListener('pointerup', function (event) {
     if (event.pointerType === 'mouse') return;
     var branch = event.target.closest('.dsh-pet-menu-branch');
-    if (branch) branch.dispatchEvent(new MouseEvent('mouseenter', { view: window }));
+    // Let the touch's pointerup/click finish before opening a child panel. If
+    // the panel is inserted synchronously, its reflow changes the hit target
+    // under the same finger and a branch tap can accidentally activate a leaf.
+    if (branch) setTimeout(function () {
+      if (branch.isConnected) branch.dispatchEvent(new MouseEvent('mouseenter', { view: window }));
+    }, 0);
   }, true);
 
   // Chromium may suppress hardware events when an Activity is backgrounded.

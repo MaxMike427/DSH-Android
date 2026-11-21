@@ -20,8 +20,12 @@ internal object PetWindowGeometry {
         if (expanded) return Crop(0, 0, screenWidth, screenHeight, 0, 0)
         val left = floor(x * density).toInt()
         val top = floor(y * density).toInt()
-        val w = (ceil((x + width) * density).toInt() - left).coerceIn(1, screenWidth)
-        val h = (ceil((y + height) * density).toInt() - top).coerceIn(1, screenHeight)
+        // Deriving size from ceil(right)-floor(left) alternates the surface size
+        // as a fixed-size pet crosses fractional pixels. Reserve one pixel for
+        // rounding and keep size independent of position, avoiding buffer resize
+        // work on every drag/physics step.
+        val w = (ceil(width * density).toInt() + 1).coerceIn(1, screenWidth)
+        val h = (ceil(height * density).toInt() + 1).coerceIn(1, screenHeight)
         return Crop(
             left.coerceIn(0, screenWidth - w), top.coerceIn(0, screenHeight - h), w, h, left, top,
         )

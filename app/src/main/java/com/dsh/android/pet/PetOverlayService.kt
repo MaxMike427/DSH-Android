@@ -51,6 +51,8 @@ class PetOverlayService : Service() {
     private var params: WindowManager.LayoutParams? = null
     private var motion: PetMotionSensors? = null
     private var panelOpen = false
+    private data class Frame(val x: Float, val y: Float, val width: Float, val height: Float, val expanded: Boolean)
+    private val frames = PetFrameQueue<Frame> { main.post { flushFrame() } }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -159,8 +161,13 @@ class PetOverlayService : Service() {
     private inner class Bridge {
         @JavascriptInterface
         fun onFrame(x: Float, y: Float, width: Float, height: Float, expanded: Boolean) {
-            main.post { updateCrop(x, y, width, height, expanded) }
+            frames.offer(Frame(x, y, width, height, expanded))
         }
+    }
+
+    private fun flushFrame() {
+        val frame = frames.take() ?: return
+        updateCrop(frame.x, frame.y, frame.width, frame.height, frame.expanded)
     }
 
     private fun updateCrop(x: Float, y: Float, width: Float, height: Float, expanded: Boolean) {
@@ -171,16 +178,22 @@ class PetOverlayService : Service() {
             x, y, width, height, resources.displayMetrics.density,
             viewportWidth(), viewportHeight(), expanded,
         ) ?: return
+        val alpha = if (width > 0f || expanded) 1f else 0f
+        val flags = windowFlags(expanded)
+        val changed = layout.x != crop.x || layout.y != crop.y ||
+            layout.width != crop.width || layout.height != crop.height ||
+            layout.alpha != alpha || layout.flags != flags
         view.translationX = -crop.contentX.toFloat()
         view.translationY = -crop.contentY.toFloat()
         layout.x = crop.x
         layout.y = crop.y
         layout.width = crop.width
         layout.height = crop.height
-        layout.alpha = if (width > 0f || expanded) 1f else 0f
-        layout.flags = windowFlags(expanded)
+        layout.alpha = alpha
+        layout.flags = flags
         if (panelOpen && !expanded) view.clearFocus()
         panelOpen = expanded
+        if (!changed) return
         runCatching { windowManager?.updateViewLayout(frame, layout) }
             .onFailure { Log.w(TAG, "cannot update pet crop", it) }
     }
@@ -225,6 +238,7 @@ class PetOverlayService : Service() {
 
     override fun onDestroy() {
         main.removeCallbacksAndMessages(null)
+        frames.clear()
         motion?.stop()
         motion = null
         container?.let { runCatching { windowManager?.removeView(it) } }
