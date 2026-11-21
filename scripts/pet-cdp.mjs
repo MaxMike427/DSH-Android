@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process'
 export const adb = (...args) => execFileSync('adb', args, { encoding: 'utf8' }).trim()
 export const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 
-export async function connectPet(main = false) {
+export async function connectPet(main = false, visibleOnly = false) {
   const socket = adb('shell', 'cat /proc/net/unix').match(/webview_devtools_remote_\d+/)?.[0]
   if (!socket) throw new Error('no debug WebView')
   adb('forward', 'tcp:9222', `localabstract:${socket}`)
@@ -35,7 +35,11 @@ export async function connectPet(main = false) {
       return r.result.value
     }
     const bridge = await evaluate('typeof window.DshPetHost !== "undefined"')
-    if (main ? !bridge : bridge) {
+    const description = JSON.parse(page.description || '{}')
+    // Both WebViews use a screen-sized viewport. Geometry cannot distinguish
+    // them; the host bridge identifies the overlay. Hidden main pages remain
+    // useful as menu references, but media acquisition needs a visible page.
+    if ((main ? !bridge : bridge) && (!visibleOnly || description.visible)) {
       return {
         evaluate, send, close: () => ws.close(),
         description: async () => {
