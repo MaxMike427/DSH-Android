@@ -35,6 +35,10 @@
          camera capture the page requests. WebView grants neither to the page
          unless the app already holds them. -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- WebView's WebRTC audio module selects the communication input route;
+         RECORD_AUDIO alone is insufficient and reports "Could not start audio
+         source" on devices whose AudioPolicy requires this control permission. -->
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <uses-permission android:name="android.permission.CAMERA" />
 
     <!-- Payload is arm64-only: PRoot and the Ubuntu Base rootfs are aarch64. -->

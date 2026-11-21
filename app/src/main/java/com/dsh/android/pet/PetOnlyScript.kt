@@ -174,7 +174,7 @@ internal val PET_ONLY_SCRIPT: String = """
   // sensors, so the plugin's existing tiltGravity/shakeThrow switches still win.
   ['deviceorientation', 'devicemotion'].forEach(function (type) {
     window.addEventListener(type, function (event) {
-      if (nativeMotion && event.isTrusted) event.stopImmediatePropagation();
+      if (wasOpen || (nativeMotion && event.isTrusted)) event.stopImmediatePropagation();
     }, true);
   });
   function dispatchSensor(type, values) {
@@ -195,6 +195,9 @@ internal val PET_ONLY_SCRIPT: String = """
   api.receiveMotion = function (sample) {
     nativeMotion = true;
     api.motionSamples++;
+    // The plugin stops flight on menu open, but a subsequent tilt sample can
+    // start it again while the finger is still choosing a menu item.
+    if (wasOpen) return;
     if (sample.beta !== null) {
       dispatchSensor('deviceorientation', {
         alpha: sample.alpha, beta: sample.beta, gamma: sample.gamma, absolute: false
