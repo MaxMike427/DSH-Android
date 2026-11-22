@@ -35,10 +35,27 @@ class PetWindowGeometryTest {
     }
 
     @Test
-    fun `menus expand the window without changing the content viewport`() {
+    fun `menus use the full window so nested submenus have room`() {
         assertEquals(
             PetWindowGeometry.Crop(0, 0, 1080, 2240, 0, 0),
             PetWindowGeometry.crop(20f, 30f, 78f, 93f, 2.75f, 1080, 2240, true),
+        )
+    }
+
+    @Test
+    fun `a page modal uses the whole window`() {
+        assertEquals(
+            PetWindowGeometry.Crop(0, 0, 1080, 2240, 0, 0),
+            PetWindowGeometry.crop(20f, 30f, 78f, 93f, 2.75f, 1080, 2240, true, true),
+        )
+    }
+
+    @Test
+    fun `a pet pinned to the edge falls back to the full window`() {
+        // Only 35px remain to the right, far less than the 160dp the menu needs.
+        assertEquals(
+            PetWindowGeometry.Crop(0, 0, 1080, 2240, 0, 0),
+            PetWindowGeometry.crop(380f, 30f, 78f, 93f, 2.75f, 1080, 2240, true),
         )
     }
 

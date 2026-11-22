@@ -12,12 +12,21 @@ internal object PetWindowGeometry {
 
     fun crop(
         x: Float, y: Float, width: Float, height: Float, density: Float,
-        screenWidth: Int, screenHeight: Int, expanded: Boolean,
+        screenWidth: Int, screenHeight: Int, expanded: Boolean, modal: Boolean = false,
     ): Crop? {
         if (listOf(x, y, width, height, density).any { !it.isFinite() } || density <= 0f ||
             screenWidth <= 0 || screenHeight <= 0 || width < 0f || height < 0f
         ) return null
-        if (expanded) return Crop(0, 0, screenWidth, screenHeight, 0, 0)
+        // A page modal is centred and must be seen whole; a menu is anchored to
+        // the pet and must not move it.
+        if (modal) return Crop(0, 0, screenWidth, screenHeight, 0, 0)
+        if (expanded) {
+            // Full screen so nested submenus always have room. The origin change
+            // is the one thing that can shift the pet for a frame, so the host
+            // hides the window for that frame (see updateCrop) instead of letting
+            // the mismatch show as a jump.
+            return Crop(0, 0, screenWidth, screenHeight, 0, 0)
+        }
         val left = floor(x * density).toInt()
         val top = floor(y * density).toInt()
         // Deriving size from ceil(right)-floor(left) alternates the surface size

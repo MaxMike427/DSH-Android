@@ -156,8 +156,12 @@ class DshRuntime(
         // in place — which silently keeps removed plugins (and their failures)
         // alive on every device that updates instead of reinstalling.
         val stamp = expectedStamp()
-        val upgrading = paths.isInstalled()
-        if (upgrading && paths.payloadStamp() == stamp) {
+        // A stale tree can exist without a usable marker (an interrupted install,
+        // or a marker cleared by hand). It must still be replaced before writing:
+        // extracting over it hits guest-created read-only files and fails EACCES.
+        val staleTree = paths.rootfs.isDirectory && paths.rootfs.list()?.isNotEmpty() == true
+        val upgrading = paths.isInstalled() || staleTree
+        if (paths.isInstalled() && paths.payloadStamp() == stamp) {
             _state.value = RuntimeState.Stopped(null)
             return@withContext
         }
@@ -183,6 +187,9 @@ class DshRuntime(
                 // The new image owns every file under rootfs, and extracting over
                 // the old tree would leave anything the new payload dropped in
                 // place — a removed plugin keeps loading from its stale directory.
+                // It would also fail outright on read-only files the guest left
+                // behind (EACCES), so a stale tree is always replaced, even when
+                // the marker is missing and "upgrading" cannot be inferred from it.
                 // Guest /root is image-owned except for the harness data directory,
                 // which is moved aside and restored so sessions survive.
                 stashGuestData()

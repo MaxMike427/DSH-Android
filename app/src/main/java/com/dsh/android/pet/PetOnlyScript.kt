@@ -20,9 +20,11 @@ internal val PET_ONLY_SCRIPT: String = """
   var host = window.DshPetHost;
   if (!host) return;
   var keep = '.dsh-pet-root,.dsh-pet-menu,.dsh-pet-chat,.dsh-pet-score,' +
-    '.dsh-pet-score-burst,[data-shortcut-modal="settings"]';
+    '.dsh-pet-score-burst,[data-shortcut-modal="settings"],' +
+    '[aria-modal="true"]:not([data-shortcut-modal])';
   var panels = '.dsh-pet-menu-column,.dsh-pet-chat,.dsh-pet-todo,' +
-    '.dsh-pet-score,[data-shortcut-modal="settings"]';
+    '.dsh-pet-score,[data-shortcut-modal="settings"],' +
+    '[aria-modal="true"]:not([data-shortcut-modal])';
   var pending = false;
   var structureChanged = true;
   var lastFrame = '';
@@ -102,6 +104,18 @@ internal val PET_ONLY_SCRIPT: String = """
     var open = Array.prototype.some.call(document.querySelectorAll(panels), visible);
     if (open && !wasOpen) openedAt = Date.now();
     wasOpen = open;
+    // Only the chat dialog needs the keyboard. Making the whole window focusable
+    // for a plain menu is a much heavier WindowManager transition (input channel,
+    // insets) and flashes the pet; menus stay non-focusable.
+    var keyboard = Array.prototype.some.call(
+      document.querySelectorAll('.dsh-pet-chat'), visible
+    );
+    // A page-level modal is screen-centered and blocks the app behind it. The
+    // overlay must show it in full, not crop it to the pet, or the user has no
+    // way to dismiss it from the desktop.
+    var modal = Array.prototype.some.call(
+      document.querySelectorAll('[aria-modal="true"]:not([data-shortcut-modal])'), visible
+    );
     var boxes = Array.prototype.filter.call(
       document.querySelectorAll('.dsh-pet-hit,.dsh-pet-bubble.is-on,.pet-tooltip.is-on'), visible
     ).map(function (el) { return el.getBoundingClientRect(); });
@@ -112,7 +126,7 @@ internal val PET_ONLY_SCRIPT: String = """
       right = Math.max.apply(null, boxes.map(function (r) { return r.right; }));
       bottom = Math.max.apply(null, boxes.map(function (r) { return r.bottom; }));
     }
-    var frame = [x, y, right - x, bottom - y, open];
+    var frame = [x, y, right - x, bottom - y, open ? 1 : 0, keyboard ? 1 : 0, modal ? 1 : 0];
     // Quantise to device pixels; don't queue identical window updates for video
     // swaps, blinking cursors and sub-pixel spring motion.
     var dpr = window.devicePixelRatio || 1;
@@ -120,7 +134,7 @@ internal val PET_ONLY_SCRIPT: String = """
     var key = JSON.stringify(frame);
     if (key !== lastFrame) {
       lastFrame = key;
-      host.onFrame(frame[0], frame[1], frame[2], frame[3], open);
+      host.onFrame(frame[0], frame[1], frame[2], frame[3], open, keyboard, modal);
     }
   }
 

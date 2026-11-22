@@ -51,7 +51,18 @@ class PetOverlayService : Service() {
     private var params: WindowManager.LayoutParams? = null
     private var motion: PetMotionSensors? = null
     private var panelOpen = false
-    private data class Frame(val x: Float, val y: Float, val width: Float, val height: Float, val expanded: Boolean)
+    private var revealGeneration = 0
+    private var previousContentX = Int.MIN_VALUE
+    private var previousContentY = Int.MIN_VALUE
+    private data class Frame(
+        val x: Float,
+        val y: Float,
+        val width: Float,
+        val height: Float,
+        val expanded: Boolean,
+        val keyboard: Boolean,
+        val modal: Boolean,
+    )
     private val frames = PetFrameQueue<Frame> { main.post { flushFrame() } }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -137,7 +148,7 @@ class PetOverlayService : Service() {
         val layout = WindowManager.LayoutParams(
             1, 1,
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-            windowFlags(false),
+            windowFlags(false, false),
             PixelFormat.TRANSLUCENT,
         ).apply {
             gravity = Gravity.TOP or Gravity.START
@@ -160,51 +171,94 @@ class PetOverlayService : Service() {
 
     private inner class Bridge {
         @JavascriptInterface
-        fun onFrame(x: Float, y: Float, width: Float, height: Float, expanded: Boolean) {
-            frames.offer(Frame(x, y, width, height, expanded))
+        fun onFrame(
+            x: Float,
+            y: Float,
+            width: Float,
+            height: Float,
+            expanded: Boolean,
+            keyboard: Boolean,
+            modal: Boolean,
+        ) {
+            frames.offer(Frame(x, y, width, height, expanded, keyboard, modal))
         }
     }
 
     private fun flushFrame() {
         val frame = frames.take() ?: return
-        updateCrop(frame.x, frame.y, frame.width, frame.height, frame.expanded)
+        updateCrop(frame.x, frame.y, frame.width, frame.height,
+            frame.expanded, frame.keyboard, frame.modal)
     }
 
-    private fun updateCrop(x: Float, y: Float, width: Float, height: Float, expanded: Boolean) {
+    private fun updateCrop(
+        x: Float,
+        y: Float,
+        width: Float,
+        height: Float,
+        expanded: Boolean,
+        keyboard: Boolean,
+        modal: Boolean,
+    ) {
         val view = webView ?: return
         val frame = container ?: return
         val layout = params ?: return
         val crop = PetWindowGeometry.crop(
             x, y, width, height, resources.displayMetrics.density,
-            viewportWidth(), viewportHeight(), expanded,
+            viewportWidth(), viewportHeight(), expanded, modal,
         ) ?: return
-        val alpha = if (width > 0f || expanded) 1f else 0f
-        val flags = windowFlags(expanded)
+        val alpha = if (width > 0f || expanded || modal) 1f else 0f
+        val flags = windowFlags(expanded, keyboard)
+        // The window origin and the WebView translation are committed through
+        // different paths (WindowManager vs the render thread). A large origin
+        // change can therefore show one frame of the page drawn against the old
+        // origin, which is the visible jump when a menu expands to fullscreen.
+        // Drag moves are small and stay smooth; only large jumps hide the frame.
+        val originShift = maxOf(
+            kotlin.math.abs(crop.contentX - previousContentX),
+            kotlin.math.abs(crop.contentY - previousContentY),
+        )
+        val largeShift = originShift > 24
+        val visibleAlpha = if (largeShift) 0f else alpha
         val changed = layout.x != crop.x || layout.y != crop.y ||
             layout.width != crop.width || layout.height != crop.height ||
-            layout.alpha != alpha || layout.flags != flags
+            layout.alpha != visibleAlpha || layout.flags != flags
         view.translationX = -crop.contentX.toFloat()
         view.translationY = -crop.contentY.toFloat()
         layout.x = crop.x
         layout.y = crop.y
         layout.width = crop.width
         layout.height = crop.height
-        layout.alpha = alpha
+        layout.alpha = visibleAlpha
         layout.flags = flags
+        previousContentX = crop.contentX
+        previousContentY = crop.contentY
         if (panelOpen && !expanded) view.clearFocus()
         panelOpen = expanded
         if (!changed) return
         runCatching { windowManager?.updateViewLayout(frame, layout) }
             .onFailure { Log.w(TAG, "cannot update pet crop", it) }
+        if (largeShift) {
+            // Two frames are enough for the new geometry to reach the
+            // compositor; the pet then reappears at the correct pixel instead
+            // of sliding across the screen.
+            val generation = ++revealGeneration
+            main.postDelayed({
+                if (generation != revealGeneration) return@postDelayed
+                val current = params ?: return@postDelayed
+                if (current.alpha == 1f) return@postDelayed
+                current.alpha = 1f
+                runCatching { windowManager?.updateViewLayout(frame, current) }
+            }, 32L)
+        }
     }
 
     private fun viewportWidth(): Int = resources.displayMetrics.widthPixels
     private fun viewportHeight(): Int = resources.displayMetrics.heightPixels
 
-    private fun windowFlags(expanded: Boolean): Int =
+    private fun windowFlags(expanded: Boolean, keyboard: Boolean): Int =
         WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
             WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
-            if (expanded) 0 else WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+            if (expanded && keyboard) 0 else WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
