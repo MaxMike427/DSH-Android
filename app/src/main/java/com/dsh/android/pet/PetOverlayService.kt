@@ -32,6 +32,7 @@ import androidx.core.content.ContextCompat
 import com.dsh.android.DshApplication
 import com.dsh.android.MainActivity
 import com.dsh.android.R
+import com.dsh.android.ui.transparentVideoPoster
 
 /**
  * A cropped view of the actual dsh-pet page, not a second implementation of it.
@@ -131,6 +132,8 @@ class PetOverlayService : Service() {
                 ): Boolean = !isHarnessUrl(request.url.toString())
             }
             webChromeClient = object : WebChromeClient() {
+                override fun getDefaultVideoPoster(): android.graphics.Bitmap = transparentVideoPoster
+
                 override fun onPermissionRequest(request: PermissionRequest) {
                     val allowed = request.resources.filter { resource ->
                         val permission = when (resource) {

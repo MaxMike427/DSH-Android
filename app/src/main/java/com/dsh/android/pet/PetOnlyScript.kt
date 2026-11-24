@@ -19,12 +19,16 @@ internal val PET_ONLY_SCRIPT: String = """
   }
   var host = window.DshPetHost;
   if (!host) return;
+  // App onboarding is also aria-modal. Only generic dialogs containing actual
+  // pet UI belong in this surface; never expose account/workspace dialogs just
+  // because the app opened them while a fresh overlay page was loading.
+  var petModal = '[data-pet-host-modal]';
   var keep = '.dsh-pet-root,.dsh-pet-menu,.dsh-pet-chat,.dsh-pet-score,' +
     '.dsh-pet-score-burst,[data-shortcut-modal="settings"],' +
-    '[aria-modal="true"]:not([data-shortcut-modal])';
+    petModal;
   var panels = '.dsh-pet-menu-column,.dsh-pet-chat,.dsh-pet-todo,' +
     '.dsh-pet-score,[data-shortcut-modal="settings"],' +
-    '[aria-modal="true"]:not([data-shortcut-modal])';
+    petModal;
   var pending = false;
   var structureChanged = true;
   var lastFrame = '';
@@ -78,6 +82,18 @@ internal val PET_ONLY_SCRIPT: String = """
     installStyle();
     var pets = document.querySelectorAll('.dsh-pet-root');
     if (!pets.length) return;
+    Array.prototype.forEach.call(
+      document.querySelectorAll('[aria-modal="true"]:not([data-shortcut-modal])'),
+      function (dialog) {
+        // Mark ownership from content, not translated titles or generated host
+        // classes. querySelector also works on WebViews predating CSS :has().
+        if (dialog.querySelector('.dsh-pet-cfg,.dsh-pet-chat,.dsh-pet-todo,.dsh-pet-score')) {
+          dialog.setAttribute('data-pet-host-modal', '');
+        } else {
+          dialog.removeAttribute('data-pet-host-modal');
+        }
+      }
+    );
     // Preserve body portals as well as the pet's ancestor branch. A container
     // can contain both the pet and the workspace, so preserving that container
     // wholesale is not enough: recurse and hide every unrelated descendant.
@@ -120,11 +136,10 @@ internal val PET_ONLY_SCRIPT: String = """
     var keyboard = Array.prototype.some.call(
       document.querySelectorAll('.dsh-pet-chat'), visible
     );
-    // A page-level modal is screen-centered and blocks the app behind it. The
-    // overlay must show it in full, not crop it to the pet, or the user has no
-    // way to dismiss it from the desktop.
+    // Pet-owned page dialogs need the full surface. Unrelated app dialogs stay
+    // hidden and must neither paint nor expand/block the desktop overlay.
     var modal = Array.prototype.some.call(
-      document.querySelectorAll('[aria-modal="true"]:not([data-shortcut-modal])'), visible
+      document.querySelectorAll(petModal), visible
     );
     var boxes = Array.prototype.filter.call(
       document.querySelectorAll('.dsh-pet-hit,.dsh-pet-bubble.is-on,.pet-tooltip.is-on'), visible

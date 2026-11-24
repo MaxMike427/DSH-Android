@@ -723,6 +723,8 @@ private fun DshWebView(url: String, modifier: Modifier = Modifier) {
                     }
                 }
                 webChromeClient = object : android.webkit.WebChromeClient() {
+                    override fun getDefaultVideoPoster(): android.graphics.Bitmap = transparentVideoPoster
+
                     /** The popup currently hosting the sign-in window, if any. */
                     private var activeLoginPopup: LoginPopup? = null
 
