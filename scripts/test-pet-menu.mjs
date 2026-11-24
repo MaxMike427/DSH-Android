@@ -69,10 +69,7 @@ try {
   await tapLabel('超大伸懒腰')
   await sleep(500)
   assert.equal((await page.evaluate(snapshot)).visible.length, 0, 'menu did not close after action')
-  // The window closes right after the menu; polling it here races the
-  // post-action animation, so the collapse is verified in the chat/todo steps
-  // below, which use the same path without a long playback in between.
-  console.log(`action collapse state: window ${JSON.stringify(windowBounds())}`)
+  await waitSmall('fullscreen window did not shrink after action')
   console.log('PASS: touch opens two submenu levels, runs an action, then restores the small window')
 
   await page.evaluate(contextMenu)

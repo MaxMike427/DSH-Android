@@ -1,10 +1,9 @@
 /**
- * Frame-accurate jump check across menu open/close.
+ * DOM-pose stability check across menu open/close.
  *
- * screenX/screenY are the Android window origin as the renderer sees them, so
- * screenX + hit.left * dpr is the pet's real screen coordinate. Sampling that
- * every animation frame catches a one-frame displacement that a before/after
- * comparison misses.
+ * screenX/screenY report the renderer's logical origin, NOT WindowManager's
+ * interpolated surface position. This test cannot catch system move animations.
+ * Use test-pet-menu-pixels.mjs for the actual on-screen jump regression.
  */
 import assert from 'node:assert/strict'
 import { adb, connectPet, sleep, stateExpression } from './pet-cdp.mjs'
@@ -65,7 +64,7 @@ try {
   console.log(JSON.stringify({ frames: points.length, baseline: base, worst, viewports: sizes,
     first: deviations.slice(0, 6), last: deviations.slice(-6) }, null, 2))
   assert.ok(Math.hypot(worst.dx, worst.dy) < 2, `pet jumps ${Math.hypot(worst.dx, worst.dy).toFixed(1)}px during long-press/click`)
-  console.log('PASS: pet stays anchored across menu open and menu click')
+  console.log('PASS: logical pet pose stays anchored (use the pixel test to verify presentation)')
 } finally {
   if (touch) await page.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
   await page.evaluate(dismiss)

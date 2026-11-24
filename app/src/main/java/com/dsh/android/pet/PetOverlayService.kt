@@ -51,9 +51,6 @@ class PetOverlayService : Service() {
     private var params: WindowManager.LayoutParams? = null
     private var motion: PetMotionSensors? = null
     private var panelOpen = false
-    private var revealGeneration = 0
-    private var previousContentX = Int.MIN_VALUE
-    private var previousContentY = Int.MIN_VALUE
     private data class Frame(
         val x: Float,
         val y: Float,
@@ -154,6 +151,12 @@ class PetOverlayService : Service() {
             gravity = Gravity.TOP or Gravity.START
             alpha = 0f // Don't flash the harness before the pet is ready.
             softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
+            // This window is a moving crop, not an independently animated card.
+            // WindowManager's automatic move animation interpolates the old
+            // origin for ~200ms while the WebView translation changes at once.
+            // That makes the pet fly across the screen on menu open AND close,
+            // even though its DOM/screenX coordinates report no movement.
+            disableMoveAnimation(this)
         }
         try {
             wm.addView(frame, layout)
@@ -208,47 +211,37 @@ class PetOverlayService : Service() {
         ) ?: return
         val alpha = if (width > 0f || expanded || modal) 1f else 0f
         val flags = windowFlags(expanded, keyboard)
-        // The window origin and the WebView translation are committed through
-        // different paths (WindowManager vs the render thread). A large origin
-        // change can therefore show one frame of the page drawn against the old
-        // origin, which is the visible jump when a menu expands to fullscreen.
-        // Drag moves are small and stay smooth; only large jumps hide the frame.
-        val originShift = maxOf(
-            kotlin.math.abs(crop.contentX - previousContentX),
-            kotlin.math.abs(crop.contentY - previousContentY),
-        )
-        val largeShift = originShift > 24
-        val visibleAlpha = if (largeShift) 0f else alpha
         val changed = layout.x != crop.x || layout.y != crop.y ||
             layout.width != crop.width || layout.height != crop.height ||
-            layout.alpha != visibleAlpha || layout.flags != flags
+            layout.alpha != alpha || layout.flags != flags
         view.translationX = -crop.contentX.toFloat()
         view.translationY = -crop.contentY.toFloat()
         layout.x = crop.x
         layout.y = crop.y
         layout.width = crop.width
         layout.height = crop.height
-        layout.alpha = visibleAlpha
+        layout.alpha = alpha
         layout.flags = flags
-        previousContentX = crop.contentX
-        previousContentY = crop.contentY
         if (panelOpen && !expanded) view.clearFocus()
         panelOpen = expanded
         if (!changed) return
         runCatching { windowManager?.updateViewLayout(frame, layout) }
             .onFailure { Log.w(TAG, "cannot update pet crop", it) }
-        if (largeShift) {
-            // Two frames are enough for the new geometry to reach the
-            // compositor; the pet then reappears at the correct pixel instead
-            // of sliding across the screen.
-            val generation = ++revealGeneration
-            main.postDelayed({
-                if (generation != revealGeneration) return@postDelayed
-                val current = params ?: return@postDelayed
-                if (current.alpha == 1f) return@postDelayed
-                current.alpha = 1f
-                runCatching { windowManager?.updateViewLayout(frame, current) }
-            }, 32L)
+    }
+
+    private fun disableMoveAnimation(layout: WindowManager.LayoutParams) {
+        if (Build.VERSION.SDK_INT >= 34) {
+            layout.setCanPlayMoveAnimation(false)
+        } else {
+            // API 34 made the existing NO_MOVE_ANIMATION setting public. Older
+            // supported Android versions expose the same flag on LayoutParams;
+            // isolate this compatibility access and retain every other flag.
+            @SuppressLint("SoonBlockedPrivateApi")
+            val result = runCatching {
+                val field = WindowManager.LayoutParams::class.java.getField("privateFlags")
+                field.setInt(layout, field.getInt(layout) or (1 shl 6))
+            }
+            result.onFailure { Log.w(TAG, "Cannot disable pet window move animation", it) }
         }
     }
 

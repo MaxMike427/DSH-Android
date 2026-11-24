@@ -21,10 +21,9 @@ internal object PetWindowGeometry {
         // the pet and must not move it.
         if (modal) return Crop(0, 0, screenWidth, screenHeight, 0, 0)
         if (expanded) {
-            // Full screen so nested submenus always have room. The origin change
-            // is the one thing that can shift the pet for a frame, so the host
-            // hides the window for that frame (see updateCrop) instead of letting
-            // the mismatch show as a jump.
+            // Full screen so nested submenus always have room. The host disables
+            // automatic move animations: window position and page translation
+            // must change immediately together, never interpolate independently.
             return Crop(0, 0, screenWidth, screenHeight, 0, 0)
         }
         val left = floor(x * density).toInt()
