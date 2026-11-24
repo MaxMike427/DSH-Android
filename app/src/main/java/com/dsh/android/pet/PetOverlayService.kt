@@ -51,6 +51,8 @@ class PetOverlayService : Service() {
     private var params: WindowManager.LayoutParams? = null
     private var motion: PetMotionSensors? = null
     private var panelOpen = false
+    private var panelRequest = 0
+    private var acknowledgedPanelRequest = -1
     private data class Frame(
         val x: Float,
         val y: Float,
@@ -59,6 +61,7 @@ class PetOverlayService : Service() {
         val expanded: Boolean,
         val keyboard: Boolean,
         val modal: Boolean,
+        val panelRequest: Int,
     )
     private val frames = PetFrameQueue<Frame> { main.post { flushFrame() } }
 
@@ -87,6 +90,9 @@ class PetOverlayService : Service() {
         val frame = FrameLayout(this).apply {
             clipChildren = true
             clipToPadding = true
+            addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
+                acknowledgePanelSpace()
+            }
         }
         val view = WebView(this).apply {
             setBackgroundColor(Color.TRANSPARENT)
@@ -111,6 +117,7 @@ class PetOverlayService : Service() {
                         view.stopLoading()
                         return
                     }
+                    acknowledgedPanelRequest = -1
                     view.evaluateJavascript(PET_ONLY_SCRIPT, null)
                 }
 
@@ -182,13 +189,15 @@ class PetOverlayService : Service() {
             expanded: Boolean,
             keyboard: Boolean,
             modal: Boolean,
+            panelRequest: Int,
         ) {
-            frames.offer(Frame(x, y, width, height, expanded, keyboard, modal))
+            frames.offer(Frame(x, y, width, height, expanded, keyboard, modal, panelRequest))
         }
     }
 
     private fun flushFrame() {
         val frame = frames.take() ?: return
+        panelRequest = frame.panelRequest
         updateCrop(frame.x, frame.y, frame.width, frame.height,
             frame.expanded, frame.keyboard, frame.modal)
     }
@@ -224,9 +233,28 @@ class PetOverlayService : Service() {
         layout.flags = flags
         if (panelOpen && !expanded) view.clearFocus()
         panelOpen = expanded
-        if (!changed) return
-        runCatching { windowManager?.updateViewLayout(frame, layout) }
-            .onFailure { Log.w(TAG, "cannot update pet crop", it) }
+        if (changed) {
+            runCatching { windowManager?.updateViewLayout(frame, layout) }
+                .onFailure { Log.w(TAG, "cannot update pet crop", it) }
+        }
+        acknowledgePanelSpace()
+    }
+
+    private fun acknowledgePanelSpace() {
+        val frame = container ?: return
+        val layout = params ?: return
+        if (!panelOpen || panelRequest == acknowledgedPanelRequest ||
+            frame.width != layout.width || frame.height != layout.height
+        ) return
+        val request = panelRequest
+        acknowledgedPanelRequest = request
+        // Run after traversal. The menu may already exist in Chromium, but it
+        // must not paint until WindowManager has actually expanded its surface.
+        frame.post {
+            if (panelOpen && request == panelRequest) {
+                webView?.evaluateJavascript("window.__dshPetOnly?.onPanelSpace($request)", null)
+            }
+        }
     }
 
     private fun disableMoveAnimation(layout: WindowManager.LayoutParams) {

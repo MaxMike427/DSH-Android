@@ -32,6 +32,7 @@ internal val PET_ONLY_SCRIPT: String = """
   var wasOpen = false;
   var nativeMotion = false;
   var touchMenuItem = null;
+  var panelRequest = 0;
   var api = { version: 2, refresh: schedule, motionSamples: 0 };
   window.__dshPetOnly = api;
 
@@ -46,7 +47,12 @@ internal val PET_ONLY_SCRIPT: String = """
       '[data-pet-host-path]{background:transparent!important;box-shadow:none!important;' +
       'border:0!important;backdrop-filter:none!important;position:fixed!important;' +
       'inset:0!important;width:auto!important;height:auto!important;transform:none!important;' +
-      'overflow:visible!important;pointer-events:none!important}';
+      'overflow:visible!important;pointer-events:none!important}' +
+      // Keep the menu measurable so report() can request the full window, but
+      // don't paint a fragment into the old pet-sized surface. Opacity/display
+      // would also hide it from our panel detection, hence clip-path.
+      'html:not([data-pet-panel-ready]) .dsh-pet-menu{' +
+      'clip-path:inset(100%)!important;pointer-events:none!important}';
     (document.head || document.documentElement).appendChild(style);
   }
 
@@ -102,7 +108,11 @@ internal val PET_ONLY_SCRIPT: String = """
       isolate();
     }
     var open = Array.prototype.some.call(document.querySelectorAll(panels), visible);
-    if (open && !wasOpen) openedAt = Date.now();
+    if (open !== wasOpen) {
+      panelRequest++;
+      document.documentElement.removeAttribute('data-pet-panel-ready');
+      if (open) openedAt = Date.now();
+    }
     wasOpen = open;
     // Only the chat dialog needs the keyboard. Making the whole window focusable
     // for a plain menu is a much heavier WindowManager transition (input channel,
@@ -126,7 +136,7 @@ internal val PET_ONLY_SCRIPT: String = """
       right = Math.max.apply(null, boxes.map(function (r) { return r.right; }));
       bottom = Math.max.apply(null, boxes.map(function (r) { return r.bottom; }));
     }
-    var frame = [x, y, right - x, bottom - y, open ? 1 : 0, keyboard ? 1 : 0, modal ? 1 : 0];
+    var frame = [x, y, right - x, bottom - y, open ? 1 : 0, keyboard ? 1 : 0, modal ? 1 : 0, panelRequest];
     // Quantise to device pixels; don't queue identical window updates for video
     // swaps, blinking cursors and sub-pixel spring motion.
     var dpr = window.devicePixelRatio || 1;
@@ -134,7 +144,7 @@ internal val PET_ONLY_SCRIPT: String = """
     var key = JSON.stringify(frame);
     if (key !== lastFrame) {
       lastFrame = key;
-      host.onFrame(frame[0], frame[1], frame[2], frame[3], open, keyboard, modal);
+      host.onFrame(frame[0], frame[1], frame[2], frame[3], open, keyboard, modal, panelRequest);
     }
   }
 
@@ -148,6 +158,14 @@ internal val PET_ONLY_SCRIPT: String = """
     if (typeof queueMicrotask === 'function') queueMicrotask(report);
     else setTimeout(report, 0);
   }
+
+  // The native host calls this only after laying out the expanded surface. An
+  // acknowledgement from an earlier open/close must not reveal a newer menu.
+  api.onPanelSpace = function (request) {
+    if (wasOpen && request === panelRequest) {
+      document.documentElement.setAttribute('data-pet-panel-ready', '');
+    }
+  };
 
   // Touch produces a compatibility mousedown after a long press. It must not
   // immediately close the menu that the same press has just opened.

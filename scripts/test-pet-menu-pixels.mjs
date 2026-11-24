@@ -53,15 +53,29 @@ try {
   adb('shell', 'input', 'swipe', String(x), String(y), String(x), String(y), '1000')
   await sleep(600)
   assert.ok(await page.evaluate(`!![...document.querySelectorAll('.dsh-pet-menu-column')].find(e=>e.getBoundingClientRect().width>0)`), 'real system long press did not open a menu')
+  const menu = await page.evaluate(`(() => {
+    const column=[...document.querySelectorAll('.dsh-pet-menu-column')].find(e=>e.getBoundingClientRect().width>0)
+    const r=column.getBoundingClientRect()
+    return {x:r.x,y:r.y,w:r.width,h:r.height,dpr:devicePixelRatio}
+  })()`)
+  const menuOrigin = await page.description()
+  const menuBox = [menuOrigin.screenX + menu.x * menu.dpr, menuOrigin.screenY + menu.y * menu.dpr,
+    menu.w * menu.dpr, menu.h * menu.dpr]
+  fs.writeFileSync(path.join(out, 'capture.json'), JSON.stringify({ menuBox }, null, 2) + '\n')
   await page.evaluate('document.dispatchEvent(new KeyboardEvent("keydown", {key:"Escape",bubbles:true}))')
   await completed
   const local = path.join(out, 'menu.mp4')
   adb('pull', video, local)
-  const result = execFileSync('python', [path.join(root, 'analyze-pet-marker.py'), local, ffmpeg, out], { encoding: 'utf8' })
+  const result = execFileSync('python', [path.join(root, 'analyze-pet-marker.py'), local, ffmpeg, out, JSON.stringify(menuBox)], { encoding: 'utf8', timeout: 45000 })
   console.log(result)
   const verdict = JSON.parse(result)
   assert.ok(verdict.maxJumpPx <= 4, `compositor moved pet ${verdict.maxJumpPx}px; artifacts: ${out}`)
   assert.ok(verdict.missingDuringTransition <= 1, `pet disappears during ${verdict.missingDuringTransition} rendered frames`)
+  if (process.argv.includes('--stable-menu')) {
+    assert.equal(verdict.partialMenuFrames, 0, `a clipped white menu rectangle flashes for ${verdict.partialMenuFrames} frames; artifacts: ${out}`)
+    assert.ok(verdict.maxUnexpectedWhiteOutsideMenu < 1000,
+      `unexpected white pixels outside the menu: ${verdict.maxUnexpectedWhiteOutsideMenu}; artifacts: ${out}`)
+  }
   console.log('PASS: actual pet pixels stay fixed and visible through menu open/close')
 } finally {
   if (completed) await completed.catch(() => {})
